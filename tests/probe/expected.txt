@@ -1,0 +1,17 @@
+# Expected findings for tests/probe — 14 planted violations.
+# Run: python3 skill/scripts/check_layering.py tests/probe --max-per-file 2
+# Every line below must appear; nothing about the block comment may appear.
+[ERROR] components/comp_sensor.c:1 平台头泄漏：task.h
+[ERROR] components/comp_sensor.c:2 平台头泄漏：queue.h
+[ERROR] components/comp_sensor.c:3 平台头泄漏：gd32f10x.h
+[ERROR] components/comp_sensor.c:10 越层调用 HAL：__HAL_RCC_GPIOA_CLK_ENABLE(
+[ERROR] components/comp_sensor.c:11 越层调用 LL：LL_GPIO_SetPinMode(
+[ERROR] components/comp_sensor.c:12 越层调用厂商库：gpio_bit_set(
+[ERROR] components/comp_sensor.c:13 越层调用 RTOS API：vTaskDelay(
+[ERROR] components/comp_sensor.c:5 跨模块全局变量：g_ctx（改走消息总线或改 static）
+[ERROR] components/comp_sensor.c:6 跨模块全局变量：g_buf（改走消息总线或改 static）
+[ERROR] components/comp_sensor.c:7 extern 跨模块变量：extern uint8_t g_shared;
+[ERROR] osal/osal_port.c:1 反向依赖：osal/ 包含 app/ 的 app.h
+[WARN ] main.c:4 未分层文件 HAL 调用：HAL_GPIO_WritePin(
+[WARN ] main.c:5 未分层文件 寄存器访问
+[WARN ] main.c:6 未分层文件 寄存器访问
