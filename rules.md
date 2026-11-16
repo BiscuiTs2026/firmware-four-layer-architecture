@@ -1,3 +1,5 @@
+# Firmware Four-Layer Architecture Rules
+
 本文件是本项目的强制工程规范，请整体作为系统提示词或项目规则加载。
 
 其优先级高于你“先跑通再重构”“最小改动完成需求”的默认习惯。若用户当次指令与本规范冲突，以用户指令为准，但必须在回答开头指出冲突点与由此产生的技术债。
@@ -21,11 +23,13 @@
 | OSAL | `osal/` | 封装任务/延时/互斥/队列/时间 | 公共头里出现芯片头或 RTOS 头 |
 | BSP | `bsp/` | 操作寄存器、调 HAL、封装外设 | 出现业务语义（“温度”“配网”）、向上返回业务结构体 |
 
+另设 `common/` 存放纯类型与常量（`err_t`、`message_t`、`msg_id` 表）。任何层都可 include 它，它自身不得 include 任何层；它不参与四层依赖排序。
+
 四条越层禁令：
 
-1. 反向依赖：下层不得 `#include` 上层。
-2. 跨层直调：APP 不得跳过组件直接调 OSAL / BSP；组件不得调 APP。
-3. 头文件泄漏：公共 `.h` 不得出现 `<stm32f1xx_hal.h>`、`FreeRTOS.h` 等平台头。
+1. 反向依赖：下层不得 `#include` 上层（含 `common/` 包含任何层）。
+2. 跨层直调：APP 不得跳过组件直调 BSP；APP 对 OSAL 只允许时间原语（`osal_sleep_ms` / `osal_tick_ms`），不得调队列、互斥、任务创建；组件不得调 APP。
+3. 头文件泄漏：公共 `.h` 不得出现 `<stm32f1xx_hal.h>`、`FreeRTOS.h`、`task.h`、`gd32f10x.h` 等平台头。
 4. 类型泄漏：厂商类型（`SPI_HandleTypeDef`、`GPIO_TypeDef`、`nrfx_spi_t`、`dl_*` 等）不得出现在 `bsp/` 以外任何层可见的头文件签名中——含参数、返回值、结构体成员、typedef。跨层只传标准整型、自定义句柄、自定义枚举。
    > 禁 `#include` 可被内联绕过，禁类型绕不过：类型进了签名，换芯片就得改上层。
 
@@ -42,18 +46,24 @@
 **BSP**：只暴露语义化接口，屏蔽引脚与芯片差异；前缀 `bsp_`，签名统一 `err_t bsp_<对象>_<动作>(...)`；引脚映射、时钟、上下拉、复用全封在 `.c` 内；换芯片只允许改 `bsp/` 与 `osal/`，上层零改动。
 示例 `err_t bsp_io_write(io_id_t id, bool level);` —— 上层只知道“哪个口”，不知道是 GPIOA 还是 GPIOB。
 
-**OSAL**：上层不得出现 `vTaskDelay`、`xSemaphoreTake`、`osDelay`；至少覆盖任务、延时、互斥、信号量、队列、时间戳；切 RTOS 或退裸机只替换 `osal/osal_port_*.c`。
+**OSAL**：上层不得出现 `vTaskDelay`、`xSemaphoreTake`、`osDelay`；至少覆盖任务、延时、互斥、信号量、队列、时间戳；切 RTOS 或退裸机只替换 `osal/osal_port_*.c`（移植实现 `include` 平台头属合法）。
 
 **组件**：一个功能一个组件，成对 `.c/.h`，可独立增删；统一生命周期 `comp_xxx_init → start → stop`，失败返回 `err_t`；组件间不互调内部函数，只走消息总线或已声明的公共 API；内部状态全 `static`，头文件不出现 `extern` 变量。
 
-**APP**：只做流程编排（读消息、判状态、调组件 API），不写硬件细节与长延时轮询；一个业务流程 = 一个函数或一个状态机，函数不超过 40 行。
+**APP**：只做流程编排（读消息、判状态、调组件 API），不写硬件细节与长延时轮询；需要延时或超时走 `osal_sleep_ms()` 或消息超时，禁止自旋等待；一个业务流程 = 一个函数或一个状态机，函数不超过 40 行。
 
 ## 3. 数据流
 
 1. 禁止新增跨模块全局变量，跨模块只走消息总线。
-2. 消息统一结构，禁止各模块自造数据包：`{ msg_id_t id; uint8_t src; uint32_t tick; uint16_t len; uint8_t payload[MSG_PAYLOAD_MAX]; }`，接口 `bus_publish()` / `bus_subscribe()`。
-3. 禁止超过 3 层的 `if-else` 嵌套。替代优先级：表驱动状态机 → 事件驱动回调 → RTOS 任务 + 队列/信号量。
-4. ISR 只允许置标志、发消息、清中断标志；ISR 内禁止延时、`malloc`、打印、阻塞取锁。
+2. 消息统一结构，禁止各模块自造数据包：`{ msg_id_t id; msg_src_t src; uint32_t tick; uint16_t len; uint8_t payload[MSG_PAYLOAD_MAX]; }`。
+3. 总线接口固定，不得改名或改语义：
+   - `err_t bus_publish(const message_t *msg);` 任务上下文调用，队列满返回 `ERR_BUSY`，由调用方决定丢弃或重试，禁止忙等。
+   - `err_t bus_publish_from_isr(const message_t *msg);` ISR 内唯一可用入口，不阻塞、不等待。
+   - `err_t bus_subscribe(msg_id_t id, bus_handler_t handler);` 只在初始化阶段调用；handler 运行在订阅方任务上下文，禁止阻塞。
+   - `MSG_PAYLOAD_MAX = 32`；超长数据传指针并在 payload 注明缓冲区生命周期，禁止跨模块共享裸指针。
+   - `msg_id_t` 按模块分段：BSP `0x00–0x0F`、组件 `0x10–0x2F`、APP `0x30–0x3F`；新增先登记再使用。
+4. 禁止超过 3 层的 `if-else` 嵌套。替代优先级：表驱动状态机 → 事件驱动回调 → RTOS 任务 + 队列/信号量。
+5. ISR 只允许置标志、发消息、清中断标志；ISR 内禁止延时、`malloc`、打印、阻塞取锁。
 
 ## 4. 参数中心
 
@@ -75,19 +85,21 @@
 2. 文件内部函数与变量一律 `static`，头文件只放必要声明。
 3. 每个公共 API 注释写清：用途、参数、返回值、可重入性、调用上下文（ISR / 任务）。
 
-## 7. 交付契约（每次回答必须包含，缺一不合格）
+## 7. 交付合同（每次回答必须包含，缺一不合格）
 
 1. 改动清单：文件路径 → 归属层级 → 新增/修改/删除。
 2. 依赖方向说明：是否违反单向依赖，明确回答并给理由。
 3. 接口变更：新增或修改的公共 API 签名及调用方。
 4. 规范自检表：逐条勾选第 8 节，未通过项写明原因与待办。
 5. 验证建议：至少 1 条可执行方式（编译 / 逻辑测试点 / 上板观测点）。
+6. 技术债登记：因用户指令临时放宽的条款，写入 `TECH_DEBT.md`（日期、条款、原因、计划修复轮次）。
 
 ## 8. 自检清单（输出前逐条核对）
 
 - [ ] 无跨层调用、无反向依赖
 - [ ] 公共头无芯片头、无 RTOS 头、无厂商类型
 - [ ] 无新增跨模块全局变量，跨模块走消息总线
+- [ ] 总线接口签名与第 3 节一致，`msg_id` 已登记
 - [ ] `if-else` 嵌套不超过 3 层（已用状态机 / 事件驱动）
 - [ ] ISR 内无延时、打印、动态内存、阻塞锁
 - [ ] 对外 API 均判空与判范围，返回统一 `err_t`
@@ -96,10 +108,12 @@
 - [ ] 异常路径均有返回值或降级
 - [ ] 新模块可独立增删
 - [ ] 未改 `.ioc` / `.syscfg` / SDK 生成文件，代码在 USER CODE 区或自有目录
+- [ ] 检查脚本无 ERROR，且无未豁免 WARN
 
 ## 9. 禁止清单
 
-- APP 或组件层出现 `HAL_GPIO_WritePin`、`GPIOx->ODR` 等寄存器 / HAL 调用
+- APP 或组件层出现 `HAL_GPIO_WritePin`、`__HAL_RCC_*`、`LL_GPIO_*`、`gpio_bit_set`、`GPIOx->ODR` 等 HAL / LL / SPL / 寄存器调用
+- APP 或组件层出现 `vTaskDelay`、`xSemaphoreTake`、`osDelay` 等 RTOS API
 - 用 `extern` 变量在模块间传数据
 - 巨型 `main.c` 堆所有业务逻辑
 - `while(1){ if(...){} }` 轮询代替事件机制
