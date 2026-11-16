@@ -51,7 +51,7 @@ Nine checks: HAL / LL / SPL / RTOS calls and register access outside `bsp/`; pla
 ### Regression
 
 ```bash
-python3 skill/scripts/check_layering.py tests/probe --max-per-file 2
+python3 skill/scripts/check_layering.py tests/probe
 ```
 
 The probe plants 14 violations — FreeRTOS and GD32 headers, `__HAL_RCC_*`, the LL library, GD32 SPL calls, `vTaskDelay`, struct and array globals, `extern`, a reverse include, HAL plus registers in `main.c`, digit-suffixed registers. Expected: **11 errors + 3 warnings, no false positives**. A `HAL_GPIO_WritePin` that appears only inside a block comment must stay silent.

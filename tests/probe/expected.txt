@@ -1,5 +1,5 @@
 # Expected findings for tests/probe — 14 planted violations.
-# Run: python3 skill/scripts/check_layering.py tests/probe --max-per-file 2
+# Run: python3 skill/scripts/check_layering.py tests/probe
 # Every line below must appear; nothing about the block comment may appear.
 [ERROR] components/comp_sensor.c:1 平台头泄漏：task.h
 [ERROR] components/comp_sensor.c:2 平台头泄漏：queue.h

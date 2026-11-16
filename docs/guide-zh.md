@@ -44,7 +44,7 @@
 ## 回归测试
 
 ```bash
-python3 skill/scripts/check_layering.py tests/probe --max-per-file 2
+python3 skill/scripts/check_layering.py tests/probe
 ```
 
 探针里埋了 14 处违规（FreeRTOS 与 GD32 头、`__HAL_RCC_*`、LL 库、GD32 SPL、`vTaskDelay`、结构体/数组全局变量、`extern`、反向 include、`main.c` 里的 HAL 与寄存器、带数字后缀的寄存器）。期望：**11 ERROR + 3 WARN**，且块注释里的 `HAL_GPIO_WritePin` 不得被误报。
