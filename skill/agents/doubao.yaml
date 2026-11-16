@@ -1,0 +1,7 @@
+interface:
+  display_name: "四层架构规范"
+  short_description: "约束 AI 按 BSP/OSAL/组件/APP 分层写单片机代码"
+  default_prompt: "使用 $firmware-four-layer-architecture 帮我完成……"
+
+policy:
+  allow_implicit_invocation: true
