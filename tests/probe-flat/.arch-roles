@@ -1,0 +1,7 @@
+# 扁平 src/ 工程的角色清单：模式 = 层
+# 层可选：bsp / osal / components / app / glue
+src/main.c      = glue
+src/hw_*.c      = bsp
+src/hw_*.h      = bsp
+src/logic_*.c   = components
+src/logic_*.h   = components

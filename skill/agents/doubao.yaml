@@ -1,6 +1,6 @@
 interface:
-  display_name: "四层架构规范"
-  short_description: "约束 AI 按 BSP/OSAL/组件/APP 分层写单片机代码"
+  display_name: "固件四层架构规范"
+  short_description: "约束 AI 按 BSP/OSAL/组件/APP 分层写单片机代码，支持 HAL 与裸机两种工程"
   default_prompt: "使用 $firmware-four-layer-architecture 帮我完成……"
 
 policy:

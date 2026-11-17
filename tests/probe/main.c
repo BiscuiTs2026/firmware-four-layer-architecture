@@ -1,7 +1,12 @@
 #include "stm32f1xx_hal.h"
-void main_task(void)
+#include "app.h"
+
+int main(void)
 {
-    HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_SET);
-    GPIOA->ODR |= 0x20;
-    TIM1->CCR1 = 100;
+  HAL_Init();
+  app_run();
+
+  while (1)
+  {
+  }
 }

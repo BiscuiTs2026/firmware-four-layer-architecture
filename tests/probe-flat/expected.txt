@@ -1,0 +1,6 @@
+# tests/probe-flat 期望输出（角色清单模式）
+# 运行：python3 skill/scripts/check_layering.py tests/probe-flat
+[ERROR] src/logic_pid.c:2 平台头泄漏：stm32f1xx_hal.h
+[ERROR] src/logic_pid.c:4 跨模块全局变量：g_pid_out
+[ERROR] src/logic_pid.c:9 越层访问寄存器
+[WARN ] src/misc.c:5 未分层文件 HAL 调用：HAL_GPIO_TogglePin(

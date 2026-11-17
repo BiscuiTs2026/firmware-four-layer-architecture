@@ -1,17 +1,28 @@
-# Expected findings for tests/probe — 14 planted violations.
-# Run: python3 skill/scripts/check_layering.py tests/probe
-# Every line below must appear; nothing about the block comment may appear.
+# tests/probe 期望输出（目录分层模式）
+# 运行：python3 skill/scripts/check_layering.py tests/probe
+# 规则：下面每一行都必须出现，且实际 ERROR/WARN 条数必须与这里一致（不允许额外出错）。
+[ERROR] app/app_main.c:2 平台头泄漏：stm32f1xx_hal.h
+[ERROR] app/app_main.c:5 跨模块全局变量：g_app_state
+[ERROR] app/app_main.c:6 extern 跨模块变量：extern uint32_t g_shared;
+[ERROR] app/app_main.c:10 越层调用 HAL：HAL_GPIO_WritePin(
+[ERROR] app/app_main.c:11 越层访问寄存器
+[ERROR] app/app_main.c:12 APP 直调 BSP：bsp_io_write
+[ERROR] app/app_main.c:13 APP 越权调用 OSAL：osal_queue_send
+[ERROR] app/app_main.c:22 if 嵌套 4 层（上限 3）
 [ERROR] components/comp_sensor.c:1 平台头泄漏：task.h
 [ERROR] components/comp_sensor.c:2 平台头泄漏：queue.h
 [ERROR] components/comp_sensor.c:3 平台头泄漏：gd32f10x.h
-[ERROR] components/comp_sensor.c:10 越层调用 HAL：__HAL_RCC_GPIOA_CLK_ENABLE(
-[ERROR] components/comp_sensor.c:11 越层调用 LL：LL_GPIO_SetPinMode(
-[ERROR] components/comp_sensor.c:12 越层调用厂商库：gpio_bit_set(
-[ERROR] components/comp_sensor.c:13 越层调用 RTOS API：vTaskDelay(
-[ERROR] components/comp_sensor.c:5 跨模块全局变量：g_ctx（改走消息总线或改 static）
-[ERROR] components/comp_sensor.c:6 跨模块全局变量：g_buf（改走消息总线或改 static）
-[ERROR] components/comp_sensor.c:7 extern 跨模块变量：extern uint8_t g_shared;
-[ERROR] osal/osal_port.c:1 反向依赖：osal/ 包含 app/ 的 app.h
-[WARN ] main.c:4 未分层文件 HAL 调用：HAL_GPIO_WritePin(
-[WARN ] main.c:5 未分层文件 寄存器访问
-[WARN ] main.c:6 未分层文件 寄存器访问
+[ERROR] components/comp_sensor.c:6 跨模块全局变量：g_ctx
+[ERROR] components/comp_sensor.c:7 跨模块全局变量：g_buf
+[ERROR] components/comp_sensor.c:8 extern 跨模块变量：extern uint8_t g_shared;
+[ERROR] components/comp_sensor.c:17 越层调用 HAL：__HAL_RCC_GPIOA_CLK_ENABLE(
+[ERROR] components/comp_sensor.c:18 越层调用 LL：LL_GPIO_SetPinMode(
+[ERROR] components/comp_sensor.c:19 越层调用厂商库：gpio_bit_set(
+[ERROR] components/comp_sensor.c:20 越层调用 RTOS API：vTaskDelay(
+[ERROR] components/comp_sensor.h:6 厂商类型泄漏：SPI_HandleTypeDef
+[ERROR] components/comp_timer.c:6 ISR TIM2_IRQHandler 内调用 printf(
+[ERROR] components/comp_timer.c:7 ISR TIM2_IRQHandler 内调用 delay_ms(
+[ERROR] ld/app.ld:12 固定地址段冲突：
+[ERROR] osal/osal.h:4 平台头泄漏：FreeRTOS.h
+[ERROR] osal/osal_port.c:2 反向依赖：osal/ 包含 app/ 的 app.h
+[WARN ] components/comp_snapshot.c:9 段 .snap 未在链接脚本定义

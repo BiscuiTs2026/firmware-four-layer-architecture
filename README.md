@@ -1,77 +1,107 @@
 # firmware-four-layer-architecture
 
-Four-layer architecture rules that constrain AI coding agents writing MCU firmware.
+给 AI 写单片机固件的工程约束：**四层架构 + HAL/裸机双形态 + 可执行检查器**。
 
-Most AI-generated firmware rots the same way: a bloated `main.c`, vendor HAL calls leaking into application code, and a chip swap that forces a rewrite of everything. These rules turn the layer boundaries into constraints an agent has to satisfy and a script can partly check.
+多数 AI 生成的固件烂在同一个地方：`main.c` 越写越厚、HAL 和寄存器调用渗进业务代码、换一颗芯片要重写全工程。
+这个仓库把这些边界变成 AI 必须满足的硬约束，并把其中能机检的部分做成了脚本。
 
-> **Status**: the rules have **not** yet been validated against a live AI session. What *is* verified today: the checker passes its regression suite (`tests/probe`, 14 planted violations, all reported, no false positives), and the clean sample reports zero findings. Treat the rule text as unproven until it survives a real session.
+## 它解决什么
 
-## What is inside
-
-| Path | Purpose |
-|---|---|
-| `rules.md` | The rules as a single prompt / project rule file (130 lines) |
-| `skill/` | Installable agent skill: `SKILL.md`, full reference, checker |
-| `docs/guide-zh.md` | Design rationale, usage and acceptance tests (Chinese) |
-| `examples/` | `bad/` deliberately broken, `good/` a clean mini project |
-| `tests/probe/` | Regression fixture: 14 planted violations and expected findings |
-
-## The four layers
-
-```
-APP -> components -> OSAL -> BSP -> hardware
-```
-
-| Layer | Owns | Must never |
+| 症状 | 本仓库的约束 | 能否机检 |
 |---|---|---|
-| APP | message subscription, flow orchestration | touch registers, HAL, RTOS API or BSP |
-| components | business logic, event publishing | include each other's private headers |
-| OSAL | task / delay / mutex / queue / tick abstraction | expose chip or RTOS headers |
-| BSP | registers, HAL, pin mapping | carry business semantics |
+| 业务逻辑全堆在 `main.c` | 入口胶水层 ≤ 200 行，只做初始化与中断分发 | 能 |
+| 组件层直接写 `GPIOA->ODR` | 寄存器 / HAL / LL / SPL 只允许在 BSP 与胶水层 | 能 |
+| 公共头里出现 `UART_HandleTypeDef` | 厂商类型不得出 BSP | 能 |
+| 模块之间靠 `extern` 变量通信 | 禁 extern 传数据，只读快照除外 | 能 |
+| ISR 里 `printf`、`delay_ms` | ISR 只允许置标志/发消息/清中断 | 能 |
+| 整屏刷新 OLED 把 10 ms 节拍拉长 | 慢外设必须分块非阻塞，主循环有耗时上限 | 部分 |
+| 固定地址回读块互相覆盖 | 段地址不得重叠，禁止通配段吞并 | 能 |
+| 换芯片重写上层 | 换芯片只允许改 `bsp/` 与 `osal/` | 人工评审 |
 
-`common/` holds pure types (`err_t`, `message_t`, `msg_id` table). Any layer may include it; it may include no layer. It sits outside the dependency order.
+## 四层
 
-## Four prohibitions
-
-1. No reverse dependency: lower layers never include upper ones, and `common/` includes nothing.
-2. No cross-layer calls: APP never calls BSP directly. APP may use only OSAL time primitives (`osal_sleep_ms`, `osal_tick_ms`), never queues, mutexes or task creation.
-3. No header leakage: no `<stm32f1xx_hal.h>`, `FreeRTOS.h`, `task.h` or `gd32f10x.h` in any `.c` outside `bsp/`, and none in any public header.
-4. No **type** leakage: vendor types (`SPI_HandleTypeDef`, `GPIO_TypeDef`, `nrfx_spi_t`) must not appear in any signature visible outside `bsp/`. Banning `#include` can be bypassed by inlining a definition; banning the type cannot.
-
-Section 1.1 covers generated projects: write only inside `USER CODE` regions, never touch `.ioc` / `.syscfg` / SDK-generated files, deliver one verifiable change per round, show a diff before applying it.
-
-## Checker
-
-```bash
-python3 skill/scripts/check_layering.py <project-root>
+```
+APP → components → OSAL → BSP → 硬件
 ```
 
-Nine checks: HAL / LL / SPL / RTOS calls and register access outside `bsp/`; platform headers in `.c` and public `.h`; vendor types in headers; reverse `#include`; module-crossing globals; `extern` variables; `if` nesting deeper than 3; unlayered files (WARN); APP calling BSP or using OSAL beyond the time primitives.
+| 层 | 目录 | 拥有 | 绝对不能 |
+|---|---|---|---|
+| APP | `app/` | 流程编排、调组件 API | 碰寄存器、HAL、RTOS API、BSP |
+| 组件 | `components/` | 业务逻辑、算法、事件发布 | 碰硬件、跨组件包含内部头 |
+| OSAL | `osal/` | 时基、延时、互斥、队列 | 公共头暴露芯片头或 RTOS 头 |
+| BSP | `bsp/` | 寄存器、HAL、引脚映射 | 携带业务语义 |
+| 胶水 | `main.c` 等 | 初始化、中断分发、调度 | 承载业务逻辑 |
 
-### Regression
+`common/` 放纯类型（`err_t`、枚举），任何层可 include，它不 include 任何层。
+
+## 两种工程形态
+
+- **HAL 形态**：STM32CubeMX2 / CubeIDE / SysConfig 生成。规则只允许在 `USER CODE` 区写，不改 `.ioc`、不碰生成文件。
+- **裸机形态**：自写启动文件与链接脚本，直接操作寄存器。启动文件与链接脚本只允许人工确认后修改。
+
+两种形态共用同一套分层判据，检查器自动跳过 `Drivers/`、`CMSIS/`、`build/` 等生成目录。
+
+## 快速开始
 
 ```bash
-python3 skill/scripts/check_layering.py tests/probe
+# 1. 分层工程：直接扫
+python3 skill/scripts/check_layering.py path/to/project
+
+# 2. 扁平 src/ 工程：先写角色清单
+cat > .arch-roles <<'EOF'
+src/main*.c      = glue
+src/i2c_soft.*   = bsp
+src/telemetry.*  = components
+EOF
+python3 skill/scripts/check_layering.py path/to/project
+
+# 3. 回归自检（改检查器后必须跑）
+python3 tests/run_tests.py
 ```
 
-The probe plants 14 violations — FreeRTOS and GD32 headers, `__HAL_RCC_*`, the LL library, GD32 SPL calls, `vTaskDelay`, struct and array globals, `extern`, a reverse include, HAL plus registers in `main.c`, digit-suffixed registers. Expected: **11 errors + 3 warnings, no false positives**. A `HAL_GPIO_WritePin` that appears only inside a block comment must stay silent.
+退出码：`0` 无 ERROR，`1` 有 ERROR，`2` 用法错误。可直接接进 CI。
 
-The checker is heuristic; add `// arch-allow` to a line you have confirmed is a false positive. Files outside `app/ components/ osal/ bsp/` cannot be judged — they are reported as WARN so the blind spot stays visible instead of silent.
+## 真实效果（不是构造样例）
 
-## Using the rules
+在一套 3569 行的裸机工程（6.6 KB Flash）上实测：
 
-- **As a prompt**: paste `rules.md` into your assistant, or save it as `CLAUDE.md` / `.cursor/rules/`.
-- **As a skill**: install the `skill/` folder into your agent's skills directory.
-- **Conflict policy**: a user instruction always wins, but the agent must state the conflict and the resulting technical debt up front, and log it in `TECH_DEBT.md`.
+| 配置 | 结果 |
+|---|---|
+| 不写角色清单，直接扫 | **0 ERROR**，31 条“未分层”WARN —— 等于没装 |
+| 写角色清单后扫 | 37 ERROR，其中 34 条可直接修，3 条属已知误报 |
+| 327 行的 `main.c` 工程 | 1 ERROR：胶水层 268 行超限 |
 
-## Why not just MISRA C or BARR-C
+关键结论：**没有角色清单或分层目录，检查器的绿灯是没有意义的**。
+详细数据与误报分类见 [docs/measurements.md](docs/measurements.md)。
 
-Those standards constrain the language, not the layer boundaries: they say nothing about who may call whom. Zephyr's device model is the industrial-grade version of a correct BSP, but it is an entire operating system. This sits in between: small enough for a course project, strict enough to survive a chip swap.
+## 仓库结构
 
-## Scope and limits
+| 路径 | 作用 |
+|---|---|
+| `rules.md` | 规范本体，可直接粘进 AI 或存为项目规则文件 |
+| `skill/` | 可安装的 Agent Skill（SKILL.md + 细则索引 + 检查器） |
+| `examples/good-hal/` | 合规示例：HAL 形态全链条 |
+| `examples/good-baremetal/` | 合规示例：寄存器级全链条 + 固定地址快照 |
+| `tests/probe/` | 回归夹具：目录分层模式，逐条植入违规 |
+| `tests/probe-flat/` | 回归夹具：角色清单模式 |
+| `docs/checker.md` | 检查项、豁免语法、误报处理 |
+| `docs/measurements.md` | 实测数据与误报统计 |
+| `docs/guide-zh.md` | 设计取舍说明 |
 
-C99, STM32 / GD32 class MCUs, bare-metal or RTOS. Not covered: RTOS selection, circuit design, peripheral timing, C++ projects, performance tuning.
+## 检查器覆盖的 12 项
 
-## License
+越层调用平台 API、平台头泄漏、厂商类型泄漏、反向依赖、跨模块全局变量、extern 跨模块变量、
+`if` 嵌套超 3 层、APP 直调 BSP / 越权调 OSAL、胶水层超长、ISR 内阻塞调用、固定地址段冲突、段未定义。
 
-MIT. See [LICENSE](LICENSE).
+豁免语法：行尾 `// arch-allow`（跳过该行），`// arch-allow:snapshot`（额外放行快照声明）。
+`SystemCoreClock` 等 CMSIS 必需符号默认豁免。
+
+## 边界
+
+- 这是**启发式**检查，不是编译器，也不是 MISRA 替代品。它抓结构性问题，不抓语法与类型错误。
+- 规则里的“唯一例外”都是为真实上板调试留的口子（固定地址快照、入口胶水层）。口子有明确尺寸，不是想放就放。
+- 规范要求按层拆分，但**不要求一次拆完**：新功能进对层，旧代码在下次改动该文件时顺手下沉。
+
+## 许可
+
+MIT，见 [LICENSE](LICENSE)。

@@ -1,36 +1,70 @@
 #!/usr/bin/env python3
-"""check_layering.py — 四层架构启发式静态检查（v2）。
+"""check_layering.py — 四层架构启发式静态检查（v3）。
 
 用法：
-    python3 check_layering.py <工程根目录> [--max-per-file N]
+    python3 check_layering.py <工程根目录> [选项]
+
+选项：
+    --roles PATH        角色清单文件，默认在工程根目录找 .arch-roles / arch-roles.txt
+    --glue-max-lines N  入口胶水文件行数上限，默认 200
+    --max-per-file N    未分层文件每文件最多提示条数，默认 5
+    --no-linker         跳过链接脚本固定地址段检查
+
+两类工程形态都能扫：
+    目录模式：路径里含 bsp/ osal/ components/ app/ 即按目录判层，无需任何配置。
+    清单模式：工程是扁平 src/ 时，用角色清单把文件映射到层，例如
+              src/i2c_soft.* = bsp
+              src/telemetry.* = components
+              src/main*.c   = glue
+
+角色：
+    bsp / osal / components / app —— 四层。
+    glue —— 入口胶水（main.c、startup_*、*_irq.c 等），允许碰寄存器与 HAL，
+            但只允许做初始化与中断分发，行数超限即判为"业务逻辑上移失败"。
 
 检查项：
-    1. 越层调用平台 API：app/、components/ 下出现 HAL / LL / SPL / RTOS 调用或寄存器访问 → ERROR
-    2. 平台头泄漏：非 bsp 层的 .c 与 .h 出现芯片头或 RTOS 头 → ERROR
-    3. 厂商类型泄漏：非 bsp 层头文件签名里出现厂商类型 → ERROR
-    4. 反向依赖：下层 #include 上层的头文件 → ERROR
-    5. 跨模块全局变量：非 bsp 层 .c 文件作用域的可写变量（含结构体/数组）→ ERROR
-    6. extern 跨模块变量：非 bsp 层出现 extern 变量声明 → ERROR
-    7. if 嵌套超过 3 层 → ERROR
-    8. 未分层文件：四目录之外的 .c/.h 出现平台调用 → WARN
-    9. APP 直调 BSP 或越权调用 OSAL → ERROR
+     1. 越层调用平台 API（app/ components/ 里出现 HAL/LL/SPL/RTOS 或寄存器）→ ERROR
+     2. 平台头泄漏（非 bsp 层的 .c/.h 出现芯片头或 RTOS 头）→ ERROR
+     3. 厂商类型泄漏（非 bsp 层头文件签名里出现厂商类型）→ ERROR
+     4. 反向依赖（下层 #include 上层头文件）→ ERROR
+     5. 跨模块全局变量（非 bsp 层 .c 文件作用域可写变量）→ ERROR
+     6. extern 跨模块变量（非 bsp 层出现 extern 变量声明）→ ERROR
+     7. if 嵌套超过 3 层 → ERROR
+     8. 未分层文件的平台调用 → WARN
+     9. APP 直调 BSP 或越权调用 OSAL → ERROR
+    10. 入口胶水层超过 --glue-max-lines → WARN
+    11. ISR 内调用阻塞/格式化/动态内存函数 → ERROR
+    12. 固定地址段冲突（.ld 里两个段同址）→ ERROR；C 里 section 属性未在 .ld 定义 → WARN
 
-豁免：在目标行加 `// arch-allow` 即可跳过该行检查。
+豁免：
+    - 行尾 `// arch-allow` 跳过该行全部检查；
+    - 行尾 `// arch-allow:snapshot` 额外允许该行的全局变量声明（固定地址快照块）；
+    - `SystemCoreClock` 属 CMSIS 必需符号，默认豁免。
 
 退出码：0 = 无 ERROR；1 = 存在 ERROR；2 = 用法或路径错误。
 """
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import os
 import re
 import sys
 
+ROLES = ("bsp", "osal", "components", "app", "glue")
 LAYER_DEPTH = {"bsp": 0, "osal": 1, "components": 2, "app": 3}
 LAYERS = set(LAYER_DEPTH)
 UPPER_LAYERS = {"app", "components"}
 NON_BSP_LAYERS = {"app", "components", "osal"}
 APP_OSAL_ALLOWED = ("osal_sleep", "osal_tick_ms", "osal_now_ms", "osal_delay_ms")
+BEGINNER_FILES = ("main.c", "main.cpp")
+
+# 入口胶水文件名特征：这些文件允许碰寄存器和 HAL
+GLUE_NAME = re.compile(r"(^main\.c$|^startup_.*|^system_.*|.*_it\.c$|.*_irq\.c$|.*_irq_handler\.c$)")
+
+CMSIS_WHITELIST = {"SystemCoreClock", "uwTick", "uwTickPrio", "uwTickFreq"}
+
+ROLE_FILE_NAMES = (".arch-roles", "arch-roles.txt")
 
 PLATFORM_HEADER = re.compile(
     r'#\s*include\s*[<"]('
@@ -78,10 +112,29 @@ EXTERN_VAR = re.compile(r"^extern\s+(?!.*\()\w.*;\s*$")
 
 BSP_PREFIX_CALL = re.compile(r"\b(bsp|osal)_[a-z][a-z0-9_]*\s*\(")
 
+# ISR 内禁止出现的调用
+ISR_BLOCKING = re.compile(
+    r"\b(HAL_Delay|osDelay|osDelayUntil|vTaskDelay|vTaskDelayUntil"
+    r"|xQueueReceive|xSemaphoreTake|osMutexWait"
+    r"|delay_ms|delay_us|mdelay|udelay"
+    r"|printf|fprintf|sprintf|snprintf|vsnprintf"
+    r"|malloc|calloc|realloc|free)\s*\("
+)
+ISR_NAME = re.compile(r"(IRQHandler$|_isr$|_ISR$|^isr_|_isr_|_IRQHandler)")
+
+SECTION_ATTR = re.compile(r'__attribute__\s*\(\s*\(\s*section\s*\(\s*"([^"]+)"')
+LD_SECTION = re.compile(
+    r"(?m)^\s*(\.[A-Za-z0-9_.]+)\s+(0x[0-9A-Fa-f]{6,})\s*(?:\(NOLOAD\))?\s*:"
+)
+SECTION_NAME_OK = re.compile(r"^\.(data|bss|rodata|text)\b")
+
 SKIP_DIRS = {
-    ".git", "build", "Debug", "Release", "Objects", "Listings", ".vscode",
-    "node_modules", "Drivers", "Middlewares", "CMSIS", "tests",
+    ".git", "build", "Build", "Debug", "Release", "Objects", "Listings", ".vscode",
+    "node_modules", "Drivers", "Middlewares", "CMSIS", "tests", ".trae-html-share-packages",
 }
+
+
+# ---------------------------------------------------------------- 文本处理
 
 
 def _mask_one_line(line: str):
@@ -119,7 +172,7 @@ def _mask_one_line(line: str):
 
 
 def mask_comments(text: str) -> str:
-    """把注释与字符串内容替换为空格，保留行数。`#include` 行保留原始引号内容。"""
+    """把注释与字符串内容替换为空格，保留行数。#include 行保留原始引号内容。"""
     out = []
     in_block = False
     for line in text.splitlines():
@@ -127,7 +180,7 @@ def mask_comments(text: str) -> str:
             end = line.find("*/")
             if end >= 0:
                 in_block = False
-                out.append(" " * (end + 2) + _mask_one_line(line[end + 2 :])[0])
+                out.append(" " * (end + 2) + _mask_one_line(line[end + 2:])[0])
             else:
                 out.append(" " * len(line))
             continue
@@ -140,12 +193,54 @@ def mask_comments(text: str) -> str:
     return "\n".join(out)
 
 
-def layer_of(path: str, root: str) -> str:
-    parts = os.path.relpath(path, root).replace("\\", "/").split("/")[:-1]
-    for part in parts:
+# ---------------------------------------------------------------- 角色解析
+
+
+def load_roles(root: str, roles_path: str | None):
+    """返回 [(pattern, role)]，没有清单则返回 None。"""
+    path = roles_path
+    if path is None:
+        for name in ROLE_FILE_NAMES:
+            candidate = os.path.join(root, name)
+            if os.path.isfile(candidate):
+                path = candidate
+                break
+    if path is None:
+        return None
+    if not os.path.isfile(path):
+        raise SystemExit(f"角色清单不存在：{path}")
+    rules = []
+    with open(path, encoding="utf-8", errors="ignore") as fh:
+        for no, line in enumerate(fh, 1):
+            raw = line.split("#", 1)[0].strip()
+            if not raw or "=" not in raw:
+                continue
+            pattern, role = raw.rsplit("=", 1)
+            pattern, role = pattern.strip(), role.strip()
+            if role not in ROLES:
+                raise SystemExit(f"{path}:{no} 未知角色 {role!r}，可用：{', '.join(ROLES)}")
+            rules.append((pattern.replace("\\", "/"), role))
+    return rules
+
+
+def match_role(rel: str, rules) -> str:
+    base = rel.rsplit("/", 1)[-1]
+    for pattern, role in rules:
+        target = base if "/" not in pattern else rel
+        if fnmatch.fnmatch(target, pattern):
+            return role
+    return ""
+
+
+def dir_role(rel: str) -> str:
+    for part in rel.split("/")[:-1]:
         if part in LAYERS:
             return part
     return ""
+
+
+def is_glue(rel: str) -> bool:
+    return bool(GLUE_NAME.match(rel.rsplit("/", 1)[-1]))
 
 
 def iter_c_files(root: str):
@@ -154,6 +249,9 @@ def iter_c_files(root: str):
         for fn in filenames:
             if fn.endswith((".c", ".h")):
                 yield os.path.join(dirpath, fn)
+
+
+# ---------------------------------------------------------------- 结构分析
 
 
 def brace_kind(code: str, idx: int) -> str:
@@ -181,7 +279,7 @@ def brace_kind(code: str, idx: int) -> str:
     end = m
     while m >= 0 and (code[m].isalnum() or code[m] == "_"):
         m -= 1
-    if code[m + 1 : end + 1] != "if":
+    if code[m + 1: end + 1] != "if":
         return "other"
     m2 = m
     while m2 >= 0 and code[m2] in " \t\r\n":
@@ -189,7 +287,7 @@ def brace_kind(code: str, idx: int) -> str:
     end2 = m2
     while m2 >= 0 and (code[m2].isalnum() or code[m2] == "_"):
         m2 -= 1
-    return "else_if" if code[m2 + 1 : end2 + 1] == "else" else "if"
+    return "else_if" if code[m2 + 1: end2 + 1] == "else" else "if"
 
 
 def check_nesting(code: str):
@@ -197,12 +295,10 @@ def check_nesting(code: str):
     stack = []
     for i, ch in enumerate(code):
         if ch == "{":
-            kind = brace_kind(code, i)
-            if kind == "if":
+            if brace_kind(code, i) == "if":
                 if_count = sum(1 for s in stack if s == "if")
                 if if_count >= 3:
-                    line_no = code.count("\n", 0, i) + 1
-                    issues.append((line_no, f"if 嵌套 {if_count + 1} 层（上限 3）"))
+                    issues.append((code.count("\n", 0, i) + 1, f"if 嵌套 {if_count + 1} 层（上限 3）"))
                 stack.append("if")
             else:
                 stack.append("other")
@@ -212,13 +308,14 @@ def check_nesting(code: str):
     return issues
 
 
-def find_global_vars(masked: str):
+def find_global_vars(masked: str, raw_lines):
     """文件作用域（花括号深度 0）的可写变量声明。"""
     issues = []
     depth = 0
     for no, line in enumerate(masked.splitlines(), 1):
         code = line.strip()
         opens, closes = line.count("{"), line.count("}")
+        raw = raw_lines[no - 1] if no <= len(raw_lines) else ""
         if depth == 0 and code and code.endswith(";") and not code.startswith("#"):
             if (
                 "(" in code
@@ -226,44 +323,127 @@ def find_global_vars(masked: str):
                 or code.startswith("extern")
                 or code.startswith("static")
                 or code.startswith("const")
+                or "__attribute__" in raw
             ):
                 depth += opens - closes
                 continue
             m = GLOBAL_VAR.match(code)
-            if m:
-                issues.append((no, f"跨模块全局变量：{m.group(2)}（改走消息总线或改 static）"))
+            if m and m.group(2) not in CMSIS_WHITELIST:
+                issues.append((no, f"跨模块全局变量：{m.group(2)}（改走参数中心/只读快照，或改 static）"))
         depth += opens - closes
     return issues
 
 
-def find_extern_vars(masked: str):
+def find_extern_vars(masked: str, raw_lines):
     issues = []
     depth = 0
     for no, line in enumerate(masked.splitlines(), 1):
         code = line.strip()
-        if depth == 0 and code and EXTERN_VAR.match(code):
+        raw = raw_lines[no - 1] if no <= len(raw_lines) else ""
+        if depth == 0 and code and EXTERN_VAR.match(code) and "__attribute__" not in raw:
+            name = re.findall(r"[A-Za-z_]\w*", code)
+            if name and name[-1] in CMSIS_WHITELIST:
+                depth += line.count("{") - line.count("}")
+                continue
             issues.append((no, f"extern 跨模块变量：{code[:40]}"))
         depth += line.count("{") - line.count("}")
     return issues
 
 
-def build_header_index(root: str):
-    """头文件名 → 所在层。"""
-    index = {}
-    for path in iter_c_files(root):
-        if not path.endswith(".h"):
+FUNC_DEF = re.compile(
+    r"(?m)^[A-Za-z_][\w \t\*]*?\b([A-Za-z_]\w*)\s*\([^;{}]*\)\s*\{"
+)
+
+
+def iter_functions(masked: str):
+    """粗略提取函数定义：(name, 定义行号, 函数体文本, 函数体起始行号)。"""
+    for m in FUNC_DEF.finditer(masked):
+        name = m.group(1)
+        if name in ("if", "for", "while", "switch", "return", "sizeof"):
             continue
-        layer = layer_of(path, root)
-        if not layer:
+        start = m.end() - 1
+        depth = 0
+        i = start
+        while i < len(masked):
+            if masked[i] == "{":
+                depth += 1
+            elif masked[i] == "}":
+                depth -= 1
+                if depth == 0:
+                    break
+            i += 1
+        body = masked[start:i + 1]
+        yield name, masked.count("\n", 0, m.start()) + 1, body, masked.count("\n", 0, start) + 1
+
+
+def check_isr(masked: str):
+    """ISR 内调用阻塞 / 格式化 / 动态内存。"""
+    issues = []
+    for name, def_line, body, body_line in iter_functions(masked):
+        if not ISR_NAME.search(name):
             continue
-        index.setdefault(os.path.basename(path), layer)
-    return index
+        for m in ISR_BLOCKING.finditer(body):
+            offset = body_line + body.count("\n", 0, m.start())
+            issues.append((offset, f"ISR {name} 内调用 {m.group(1)}()（只允许置标志/发消息/清中断）"))
+    return issues
+
+
+def check_glue_length(raw: str, masked: str, limit: int):
+    code_lines = sum(1 for line in masked.splitlines() if line.strip() and not line.strip().startswith("#"))
+    if code_lines > limit:
+        return [(1, f"入口胶水层 {code_lines} 行代码（上限 {limit}），业务逻辑应下沉到组件层")]
+    return []
+
+
+# ---------------------------------------------------------------- 链接脚本
+
+
+def collect_linker(root: str):
+    sections = []  # (rel, name, addr, addr_int, line)
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
+        for fn in filenames:
+            if not fn.endswith(".ld"):
+                continue
+            path = os.path.join(dirpath, fn)
+            with open(path, encoding="utf-8", errors="ignore") as fh:
+                text = fh.read()
+            rel = os.path.relpath(path, root).replace("\\", "/")
+            for m in LD_SECTION.finditer(text):
+                line = text.count("\n", 0, m.start()) + 1
+                sections.append((rel, m.group(1), m.group(2), int(m.group(2), 16), line))
+    return sections
+
+
+def check_linker(root: str, c_sections, errors, warns):
+    sections = collect_linker(root)
+    if not sections:
+        return
+    defined = {name for _, name, _, _, _ in sections}
+    by_addr = {}
+    for rel, name, addr, value, line in sections:
+        by_addr.setdefault(value, []).append((rel, name, addr, line))
+    for value, group in by_addr.items():
+        if len(group) > 1:
+            detail = "、".join(f"{name}@{rel}" for rel, name, _, _ in group)
+            rel, name, addr, line = group[1]
+            errors.append((rel, line, f"固定地址段冲突：{detail} 都放在 {addr}"))
+    for rel, name, line in c_sections:
+        if name in defined or SECTION_NAME_OK.match(name):
+            continue
+        warns.append((rel, line, f"段 {name} 未在链接脚本定义，可能被通配吞掉或落到默认段"))
+
+
+# ---------------------------------------------------------------- 主流程
 
 
 def main():
     parser = argparse.ArgumentParser(description="四层架构启发式静态检查")
     parser.add_argument("root", help="工程根目录")
+    parser.add_argument("--roles", default=None, help="角色清单文件路径")
+    parser.add_argument("--glue-max-lines", type=int, default=200, help="入口胶水文件代码行上限")
     parser.add_argument("--max-per-file", type=int, default=5, help="未分层文件每文件最多提示条数")
+    parser.add_argument("--no-linker", action="store_true", help="跳过链接脚本检查")
     args = parser.parse_args()
 
     root = os.path.abspath(args.root)
@@ -271,44 +451,56 @@ def main():
         print(f"路径不存在：{root}", file=sys.stderr)
         return 2
 
-    header_index = build_header_index(root)
+    rules = load_roles(root, args.roles)
+    header_index = build_header_index(root, rules)
+
     errors, warns = [], []
     unlayered_hits = 0
     unlayered_files = 0
+    c_sections = []
 
     for path in sorted(iter_c_files(root)):
-        layer = layer_of(path, root)
         rel = os.path.relpath(path, root).replace("\\", "/")
+        layer = match_role(rel, rules) if rules else ""
+        if not layer:
+            layer = dir_role(rel)
+        if not layer and is_glue(rel):
+            layer = "glue"
+
         with open(path, encoding="utf-8", errors="ignore") as fh:
             raw = fh.read()
         masked = mask_comments(raw)
-        lines = masked.splitlines()
         raw_lines = raw.splitlines()
 
+        for m in SECTION_ATTR.finditer(raw):
+            c_sections.append((rel, m.group(1), raw.count("\n", 0, m.start()) + 1))
+
         local_hits = 0
-        for no, line in enumerate(lines, 1):
-            if no <= len(raw_lines) and "arch-allow" in raw_lines[no - 1]:
+        for no, line in enumerate(masked.splitlines(), 1):
+            raw_line = raw_lines[no - 1] if no <= len(raw_lines) else ""
+            if "arch-allow" in raw_line:
                 continue
             code = line
 
-            if layer == "":
-                hits = []
-                for pat, label in (
-                    (HAL_CALL, "HAL 调用"),
-                    (LL_CALL, "LL 调用"),
-                    (SPL_CALL, "厂商库调用"),
-                    (RTOS_CALL, "RTOS 调用"),
-                ):
-                    m = pat.search(code)
-                    if m:
-                        hits.append(f"{label}：{m.group(0)}")
-                        break
-                if REG_ACCESS.search(code):
-                    hits.append("寄存器访问")
-                if hits and local_hits < args.max_per_file:
-                    warns.append((rel, no, "未分层文件 " + "；".join(hits)))
-                    local_hits += 1
-                    unlayered_hits += 1
+            if layer in ("", "glue"):
+                if layer == "":
+                    hits = []
+                    for pat, label in (
+                        (HAL_CALL, "HAL 调用"),
+                        (LL_CALL, "LL 调用"),
+                        (SPL_CALL, "厂商库调用"),
+                        (RTOS_CALL, "RTOS 调用"),
+                    ):
+                        m = pat.search(code)
+                        if m:
+                            hits.append(f"{label}：{m.group(0)}")
+                            break
+                    if REG_ACCESS.search(code):
+                        hits.append("寄存器访问")
+                    if hits and local_hits < args.max_per_file:
+                        warns.append((rel, no, "未分层文件 " + "；".join(hits)))
+                        local_hits += 1
+                        unlayered_hits += 1
                 continue
 
             if layer in NON_BSP_LAYERS:
@@ -346,7 +538,7 @@ def main():
             for m in re.finditer(r'#\s*include\s*[<"]?([^>"]+)[>"]', code):
                 target = m.group(1).replace("\\", "/").split("/")[-1]
                 tgt_layer = header_index.get(target)
-                if tgt_layer and LAYER_DEPTH.get(tgt_layer, -1) > LAYER_DEPTH[layer]:
+                if tgt_layer and LAYER_DEPTH.get(tgt_layer, -1) > LAYER_DEPTH.get(layer, 99):
                     errors.append((rel, no, f"反向依赖：{layer}/ 包含 {tgt_layer}/ 的 {target}"))
                     break
 
@@ -355,16 +547,26 @@ def main():
                 unlayered_files += 1
             continue
 
-        if path.endswith(".c") and layer in NON_BSP_LAYERS:
-            for no, msg in find_global_vars(masked):
-                errors.append((rel, no, msg))
-            for no, msg in find_extern_vars(masked):
-                errors.append((rel, no, msg))
+        if layer == "glue":
+            errors.extend((rel, no, msg) for no, msg in check_glue_length(raw, masked, args.glue_max_lines))
+        else:
+            if path.endswith(".c") and layer in NON_BSP_LAYERS:
+                errors.extend((rel, no, msg) for no, msg in find_global_vars(masked, raw_lines))
+                errors.extend((rel, no, msg) for no, msg in find_extern_vars(masked, raw_lines))
+            if layer != "bsp":
+                errors.extend((rel, no, msg) for no, msg in check_nesting(masked))
 
-        if layer != "bsp":
-            for no, msg in check_nesting(masked):
-                errors.append((rel, no, msg))
+        if path.endswith(".c"):
+            for no, msg in check_isr(masked):
+                raw_line = raw_lines[no - 1] if no <= len(raw_lines) else ""
+                if "arch-allow" not in raw_line:
+                    errors.append((rel, no, msg))
 
+    if not args.no_linker:
+        check_linker(root, c_sections, errors, warns)
+
+    errors.sort(key=lambda x: (x[0], x[1]))
+    warns.sort(key=lambda x: (x[0], x[1]))
     for rel, no, msg in errors:
         print(f"[ERROR] {rel}:{no} {msg}")
     for rel, no, msg in warns:
@@ -373,11 +575,29 @@ def main():
     if unlayered_files:
         print(
             f"[NOTE ] 另有 {unlayered_files} 个未分层文件、{unlayered_hits} 处平台调用未计入分层检查；"
-            "把它们放进 app/ components/ osal/ bsp/ 才能纳入约束"
+            "把它们放进 app/ components/ osal/ bsp/，或用 .arch-roles 声明角色"
         )
+    if rules:
+        print(f"[NOTE ] 已按角色清单 {args.roles or ROLE_FILE_NAMES[0]} 判定层归属")
 
     print(f"\n合计 {len(errors)} ERROR / {len(warns)} WARN（扫描目录：{root}）")
     return 1 if errors else 0
+
+
+def build_header_index(root: str, rules):
+    """头文件名 → 所在层。"""
+    index = {}
+    for path in iter_c_files(root):
+        if not path.endswith(".h"):
+            continue
+        rel = os.path.relpath(path, root).replace("\\", "/")
+        layer = match_role(rel, rules) if rules else ""
+        if not layer:
+            layer = dir_role(rel)
+        if not layer:
+            continue
+        index.setdefault(os.path.basename(path), layer)
+    return index
 
 
 if __name__ == "__main__":

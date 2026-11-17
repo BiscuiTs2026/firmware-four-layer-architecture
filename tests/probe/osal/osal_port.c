@@ -1,5 +1,8 @@
-#include "app/app.h"
-void osal_run(void)
+#include "osal.h"
+#include "app.h"
+
+void osal_queue_send(int q, int v)
 {
-    app_init();
+  (void)q;
+  (void)v;
 }
