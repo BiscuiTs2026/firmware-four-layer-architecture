@@ -1,0 +1,7 @@
+# 故意违规样例：每条规则至少踩一次，用于演示检查器能抓到什么
+# 运行：python3 ../../skill/scripts/check_layering.py .
+
+src/main.c        = app
+src/app_main.c    = app
+src/comp_sensor.c = components
+src/bsp_io.*      = bsp

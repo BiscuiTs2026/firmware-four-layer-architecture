@@ -19,6 +19,7 @@
 
 角色：
     bsp / osal / components / app —— 四层。
+    common —— 纯类型与常量（err_t、公共枚举），任何层可包含它，它不参与依赖排序。
     glue —— 入口胶水（main.c、startup_*、*_irq.c 等），允许碰寄存器与 HAL，
             但只允许做初始化与中断分发，行数超限即判为"业务逻辑上移失败"。
 
@@ -29,12 +30,14 @@
      4. 反向依赖（下层 #include 上层头文件）→ ERROR
      5. 跨模块全局变量（非 bsp 层 .c 文件作用域可写变量）→ ERROR
      6. extern 跨模块变量（非 bsp 层出现 extern 变量声明）→ ERROR
-     7. if 嵌套超过 3 层 → ERROR
+     7. 决策型 if 嵌套超过 3 层 → ERROR（单分支守卫不计，避免字模/像素循环误报）
      8. 未分层文件的平台调用 → WARN
      9. APP 直调 BSP 或越权调用 OSAL → ERROR
     10. 入口胶水层超过 --glue-max-lines → WARN
     11. ISR 内调用阻塞/格式化/动态内存函数 → ERROR
-    12. 固定地址段冲突（.ld 里两个段同址）→ ERROR；C 里 section 属性未在 .ld 定义 → WARN
+    12. 阻塞延时：bsp 之外的 HAL_Delay → ERROR；app/组件层裸 delay_ms 等 → WARN
+    13. 固定地址段冲突（.ld 里两个段同址 / 未 4 字节对齐）→ ERROR；
+        C 里 section 属性未在 .ld 定义且未被通配覆盖 → ERROR；未标 (NOLOAD) → WARN
 
 豁免：
     - 行尾 `// arch-allow` 跳过该行全部检查；
@@ -51,11 +54,11 @@ import os
 import re
 import sys
 
-ROLES = ("bsp", "osal", "components", "app", "glue")
-LAYER_DEPTH = {"bsp": 0, "osal": 1, "components": 2, "app": 3}
+ROLES = ("bsp", "osal", "components", "app", "glue", "common")
+LAYER_DEPTH = {"common": -1, "bsp": 0, "osal": 1, "components": 2, "app": 3}
 LAYERS = set(LAYER_DEPTH)
 UPPER_LAYERS = {"app", "components"}
-NON_BSP_LAYERS = {"app", "components", "osal"}
+NON_BSP_LAYERS = {"app", "components", "osal", "common"}
 APP_OSAL_ALLOWED = ("osal_sleep", "osal_tick_ms", "osal_now_ms", "osal_delay_ms")
 BEGINNER_FILES = ("main.c", "main.cpp")
 
@@ -81,7 +84,7 @@ VENDOR_TYPE = re.compile(
     r"|nrfx_\w+_t|dl_\w+)\b"
 )
 
-HAL_CALL = re.compile(r"\b(?:__)?HAL_[A-Za-z0-9_]+\s*\(")
+HAL_CALL = re.compile(r"\b(?:__)?HAL_(?!Delay)[A-Za-z0-9_]+\s*\(")
 LL_CALL = re.compile(r"\b(?:__)?LL_[A-Za-z0-9_]+\s*\(")
 SPL_CALL = re.compile(
     r"\b(?:gpio|rcu|usart|spi|i2c|adc|tim|dma|exti|crc|rtc|pmu|fwdgt|wwdgt|bkp|can|i2s|sdio|usbd)"
@@ -124,9 +127,13 @@ ISR_NAME = re.compile(r"(IRQHandler$|_isr$|_ISR$|^isr_|_isr_|_IRQHandler)")
 
 SECTION_ATTR = re.compile(r'__attribute__\s*\(\s*\(\s*section\s*\(\s*"([^"]+)"')
 LD_SECTION = re.compile(
-    r"(?m)^\s*(\.[A-Za-z0-9_.]+)\s+(0x[0-9A-Fa-f]{6,})\s*(?:\(NOLOAD\))?\s*:"
+    r"(?m)^\s*(\.[A-Za-z0-9_.]+)\s+(0x[0-9A-Fa-f]{6,})\s*(\(NOLOAD\))?\s*:"
 )
+LD_WILDCARD = re.compile(r"\*\(\s*(\.[A-Za-z0-9_.*?\[\]]+)\s*\)")
 SECTION_NAME_OK = re.compile(r"^\.(data|bss|rodata|text)\b")
+
+HAL_DELAY = re.compile(r"\bHAL_Delay\s*\(")
+SOFT_DELAY = re.compile(r"\b(?:delay_ms|delay_us|mdelay|udelay|osal_sleep_ms)\s*\(")
 
 SKIP_DIRS = {
     ".git", "build", "Build", "Debug", "Release", "Objects", "Listings", ".vscode",
@@ -254,57 +261,53 @@ def iter_c_files(root: str):
 # ---------------------------------------------------------------- 结构分析
 
 
-def brace_kind(code: str, idx: int) -> str:
-    """返回 `{` 对应的结构类型：if / else_if / other。"""
-    j = idx - 1
-    while j >= 0 and code[j] in " \t\r\n":
-        j -= 1
-    if j < 0 or code[j] != ")":
-        return "other"
-    depth = 0
-    k = j
-    while k >= 0:
-        if code[k] == ")":
-            depth += 1
-        elif code[k] == "(":
-            depth -= 1
-            if depth == 0:
-                break
-        k -= 1
-    if k <= 0:
-        return "other"
-    m = k - 1
-    while m >= 0 and code[m] in " \t\r\n":
-        m -= 1
-    end = m
-    while m >= 0 and (code[m].isalnum() or code[m] == "_"):
-        m -= 1
-    if code[m + 1: end + 1] != "if":
-        return "other"
-    m2 = m
-    while m2 >= 0 and code[m2] in " \t\r\n":
-        m2 -= 1
-    end2 = m2
-    while m2 >= 0 and (code[m2].isalnum() or code[m2] == "_"):
-        m2 -= 1
-    return "else_if" if code[m2 + 1: end2 + 1] == "else" else "if"
+def _skip_ws(code: str, i: int) -> int:
+    while i < len(code) and code[i] in " \t\r\n":
+        i += 1
+    return i
 
 
 def check_nesting(code: str):
-    issues = []
+    """只统计"决策型" if（带 else 分支）的嵌套；单分支守卫不计。
+
+    统计全部 if 会把字模渲染、像素扫描这类"双层 for + 单分支 if"判成 4 层，
+    在真实工程上制造大量误报。这里改成只认真正的决策金字塔。
+    """
+    pairs = {}
     stack = []
     for i, ch in enumerate(code):
         if ch == "{":
-            if brace_kind(code, i) == "if":
-                if_count = sum(1 for s in stack if s == "if")
-                if if_count >= 3:
-                    issues.append((code.count("\n", 0, i) + 1, f"if 嵌套 {if_count + 1} 层（上限 3）"))
-                stack.append("if")
-            else:
-                stack.append("other")
-        elif ch == "}":
-            if stack:
-                stack.pop()
+            stack.append(i)
+        elif ch == "}" and stack:
+            pairs[stack.pop()] = i
+
+    blocks = []
+    for m in re.finditer(r"\bif\b", code):
+        j = _skip_ws(code, m.end())
+        if j >= len(code) or code[j] != "(":
+            continue
+        depth = 0
+        k = j
+        while k < len(code):
+            if code[k] == "(":
+                depth += 1
+            elif code[k] == ")":
+                depth -= 1
+                if depth == 0:
+                    break
+            k += 1
+        k = _skip_ws(code, k + 1)
+        if k >= len(code) or code[k] != "{" or k not in pairs:
+            continue
+        if code.startswith("else", _skip_ws(code, pairs[k] + 1)):
+            blocks.append((k, pairs[k]))
+
+    issues = []
+    for open_at, close_at in blocks:
+        depth = 1 + sum(1 for o, c in blocks if o != open_at and o < open_at < c)
+        if depth > 3:
+            issues.append((code.count("\n", 0, open_at) + 1,
+                           f"决策型 if 嵌套 {depth} 层（上限 3，单分支守卫不计）"))
     return issues
 
 
@@ -399,7 +402,8 @@ def check_glue_length(raw: str, masked: str, limit: int):
 
 
 def collect_linker(root: str):
-    sections = []  # (rel, name, addr, addr_int, line)
+    sections = []  # (rel, name, addr, addr_int, line, noload)
+    wildcards = []
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
         for fn in filenames:
@@ -409,29 +413,44 @@ def collect_linker(root: str):
             with open(path, encoding="utf-8", errors="ignore") as fh:
                 text = fh.read()
             rel = os.path.relpath(path, root).replace("\\", "/")
+            wildcards.extend(LD_WILDCARD.findall(text))
             for m in LD_SECTION.finditer(text):
                 line = text.count("\n", 0, m.start()) + 1
-                sections.append((rel, m.group(1), m.group(2), int(m.group(2), 16), line))
-    return sections
+                sections.append((rel, m.group(1), m.group(2), int(m.group(2), 16), line,
+                                 bool(m.group(3))))
+    return sections, wildcards
 
 
 def check_linker(root: str, c_sections, errors, warns):
-    sections = collect_linker(root)
+    sections, wildcards = collect_linker(root)
     if not sections:
         return
-    defined = {name for _, name, _, _, _ in sections}
+
+    defined = {}
     by_addr = {}
-    for rel, name, addr, value, line in sections:
+    for rel, name, addr, value, line, noload in sections:
+        defined.setdefault(name, []).append((rel, addr, line, noload))
         by_addr.setdefault(value, []).append((rel, name, addr, line))
+        if value % 4 != 0:
+            errors.append((rel, line, f"固定地址段 {name} 未 4 字节对齐：{addr}"))
+
     for value, group in by_addr.items():
         if len(group) > 1:
             detail = "、".join(f"{name}@{rel}" for rel, name, _, _ in group)
             rel, name, addr, line = group[1]
             errors.append((rel, line, f"固定地址段冲突：{detail} 都放在 {addr}"))
+
     for rel, name, line in c_sections:
-        if name in defined or SECTION_NAME_OK.match(name):
+        if name in defined:
+            if not any(noload for _, _, _, noload in defined[name]):
+                warns.append((rel, line, f"固定地址段 {name} 未标 (NOLOAD)，启动时可能被清零"))
             continue
-        warns.append((rel, line, f"段 {name} 未在链接脚本定义，可能被通配吞掉或落到默认段"))
+        if SECTION_NAME_OK.match(name):
+            continue
+        if any(fnmatch.fnmatchcase(name, pat) for pat in wildcards):
+            continue
+        errors.append((rel, line,
+                       f"固定地址段 {name} 未在链接脚本定义（会被通配吞掉或落到默认段）"))
 
 
 # ---------------------------------------------------------------- 主流程
@@ -529,6 +548,12 @@ def main():
                         errors.append((rel, no, f"APP 直调 BSP：{name}（应经组件层）"))
                     elif not name.startswith(APP_OSAL_ALLOWED):
                         errors.append((rel, no, f"APP 越权调用 OSAL：{name}（仅允许时间原语）"))
+
+            if layer in UPPER_LAYERS:
+                if HAL_DELAY.search(code):
+                    errors.append((rel, no, "阻塞延时：HAL_Delay（应基于时基非阻塞）"))
+                elif SOFT_DELAY.search(code):
+                    warns.append((rel, no, "app/组件层出现阻塞延时（确认是否应改为非阻塞时基）"))
 
             if layer in NON_BSP_LAYERS and path.endswith(".h"):
                 m = VENDOR_TYPE.search(code)

@@ -68,11 +68,11 @@ python3 tests/run_tests.py
 | 配置 | 结果 |
 |---|---|
 | 不写角色清单，直接扫 | **0 ERROR**，31 条“未分层”WARN —— 等于没装 |
-| 写角色清单后扫 | 37 ERROR，其中 34 条可直接修，3 条属已知误报 |
+| 写角色清单后扫 | 35 ERROR，全部可修（含 1 条链接脚本真实缺陷） |
 | 327 行的 `main.c` 工程 | 1 ERROR：胶水层 268 行超限 |
 
 关键结论：**没有角色清单或分层目录，检查器的绿灯是没有意义的**。
-详细数据与误报分类见 [docs/measurements.md](docs/measurements.md)。
+详细数据与缺陷分类见 [docs/measurements.md](docs/measurements.md)。
 
 ## 仓库结构
 
@@ -82,16 +82,19 @@ python3 tests/run_tests.py
 | `skill/` | 可安装的 Agent Skill（SKILL.md + 细则索引 + 检查器） |
 | `examples/good-hal/` | 合规示例：HAL 形态全链条 |
 | `examples/good-baremetal/` | 合规示例：寄存器级全链条 + 固定地址快照 |
+| `examples/flat/` | 合规示例：扁平 `src/` + `.arch-roles`，不拆目录也能过检查 |
+| `examples/bad/` | 违规样例：每条规则至少踩一次，附期望输出 |
 | `tests/probe/` | 回归夹具：目录分层模式，逐条植入违规 |
 | `tests/probe-flat/` | 回归夹具：角色清单模式 |
 | `docs/checker.md` | 检查项、豁免语法、误报处理 |
-| `docs/measurements.md` | 实测数据与误报统计 |
+| `docs/measurements.md` | 实测数据与缺陷分类 |
 | `docs/guide-zh.md` | 设计取舍说明 |
 
-## 检查器覆盖的 12 项
+## 检查器覆盖的 13 项
 
 越层调用平台 API、平台头泄漏、厂商类型泄漏、反向依赖、跨模块全局变量、extern 跨模块变量、
-`if` 嵌套超 3 层、APP 直调 BSP / 越权调 OSAL、胶水层超长、ISR 内阻塞调用、固定地址段冲突、段未定义。
+决策型 `if` 嵌套超 3 层、APP 直调 BSP / 越权调 OSAL、胶水层超长、ISR 内阻塞调用、
+app/组件层阻塞延时、固定地址段冲突与对齐、段未在 `.ld` 定义或未标 `(NOLOAD)`。
 
 豁免语法：行尾 `// arch-allow`（跳过该行），`// arch-allow:snapshot`（额外放行快照声明）。
 `SystemCoreClock` 等 CMSIS 必需符号默认豁免。

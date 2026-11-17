@@ -8,7 +8,7 @@
 [ERROR] app/app_main.c:11 越层访问寄存器
 [ERROR] app/app_main.c:12 APP 直调 BSP：bsp_io_write
 [ERROR] app/app_main.c:13 APP 越权调用 OSAL：osal_queue_send
-[ERROR] app/app_main.c:22 if 嵌套 4 层（上限 3）
+[ERROR] app/app_main.c:22 决策型 if 嵌套 4 层（上限 3，单分支守卫不计）
 [ERROR] components/comp_sensor.c:1 平台头泄漏：task.h
 [ERROR] components/comp_sensor.c:2 平台头泄漏：queue.h
 [ERROR] components/comp_sensor.c:3 平台头泄漏：gd32f10x.h
@@ -25,4 +25,5 @@
 [ERROR] ld/app.ld:12 固定地址段冲突：
 [ERROR] osal/osal.h:4 平台头泄漏：FreeRTOS.h
 [ERROR] osal/osal_port.c:2 反向依赖：osal/ 包含 app/ 的 app.h
-[WARN ] components/comp_snapshot.c:9 段 .snap 未在链接脚本定义
+[ERROR] components/comp_snapshot.c:9 固定地址段 .snap 未在链接脚本定义
+[WARN ] components/comp_timer.c:7 app/组件层出现阻塞延时

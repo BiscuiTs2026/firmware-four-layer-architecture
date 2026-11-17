@@ -1,0 +1,19 @@
+# examples/bad 期望输出
+# 运行：python3 tests/run_tests.py
+# 规则：下面每一行都必须出现，且实际 ERROR/WARN 条数必须与这里一致。
+[ERROR] ld/app.ld:16 固定地址段冲突：
+[ERROR] src/app_main.c:1 平台头泄漏：stm32f1xx.h
+[ERROR] src/app_main.c:8 跨模块全局变量：s_mode
+[ERROR] src/app_main.c:13 APP 直调 BSP：bsp_io_write
+[ERROR] src/app_main.c:15 阻塞延时：HAL_Delay
+[ERROR] src/app_main.c:28 决策型 if 嵌套 4 层（上限 3，单分支守卫不计）
+[ERROR] src/comp_sensor.c:1 平台头泄漏：stm32f1xx.h
+[ERROR] src/comp_sensor.c:12 跨模块全局变量：g_ctx
+[ERROR] src/comp_sensor.c:13 跨模块全局变量：s_value
+[ERROR] src/comp_sensor.c:16 extern 跨模块变量：extern uint8_t g_shared;
+[ERROR] src/comp_sensor.c:22 固定地址段 .ghost_ram 未在链接脚本定义
+[ERROR] src/comp_sensor.c:26 ISR EXTI0_IRQHandler 内调用 printf(
+[ERROR] src/comp_sensor.c:27 越层调用 HAL：__HAL_RCC_GPIOA_CLK_ENABLE(
+[ERROR] src/main.c:1 平台头泄漏：stm32f1xx.h
+[ERROR] src/main.c:8 越层访问寄存器
+[WARN ] src/app_main.c:14 app/组件层出现阻塞延时

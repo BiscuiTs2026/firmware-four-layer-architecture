@@ -15,10 +15,11 @@ CHECKER = os.path.join(ROOT, "skill", "scripts", "check_layering.py")
 CASES = [
     ("tests/probe", os.path.join(ROOT, "tests", "probe", "expected.txt")),
     ("tests/probe-flat", os.path.join(ROOT, "tests", "probe-flat", "expected.txt")),
+    ("examples/bad", os.path.join(ROOT, "examples", "bad", "expected.txt")),
 ]
 
 # 示例工程必须零 ERROR、零 WARN
-CLEAN = ["examples/good-hal", "examples/good-baremetal"]
+CLEAN = ["examples/good-hal", "examples/good-baremetal", "examples/flat"]
 
 
 def load_expected(path):

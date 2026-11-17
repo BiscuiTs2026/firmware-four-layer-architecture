@@ -22,7 +22,23 @@ void app_run(void)
         {
           g_shared = 4U;
         }
+        else
+        {
+          g_shared = 5U;
+        }
+      }
+      else
+      {
+        g_shared = 6U;
       }
     }
+    else
+    {
+      g_shared = 7U;
+    }
+  }
+  else
+  {
+    g_shared = 8U;
   }
 }

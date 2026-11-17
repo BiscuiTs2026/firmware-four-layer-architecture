@@ -38,7 +38,7 @@ src/logic_*.h      = components
 - 一行一条，`模式 = 层`，`#` 起注释；
 - 模式不含 `/` 时只匹配文件名，含 `/` 时匹配相对路径（支持 `*`、`?`，由 `fnmatch` 实现）；
 - 自上而下**先匹配先生效**，请把更具体的规则放前面；
-- 角色只能是 `bsp` / `osal` / `components` / `app` / `glue`；
+- 角色只能是 `bsp` / `osal` / `components` / `app` / `glue` / `common`；
 - 目录模式与清单模式同时存在时，清单优先。
 
 **优先级顺序**：角色清单 → 目录判定 → 胶水文件名自动识别（`main.c`、`startup_*`、`system_*`、`*_it.c`、`*_irq.c`）。
@@ -56,17 +56,20 @@ src/logic_*.h      = components
 | 4 | 反向依赖（下层 include 上层头） | ERROR | 全部已分层文件 |
 | 5 | 跨模块全局变量（文件作用域可写变量） | ERROR | 非 bsp 层 `.c` |
 | 6 | `extern` 跨模块变量 | ERROR | 非 bsp 层 `.c` |
-| 7 | `if` 嵌套超过 3 层 | ERROR | 非 bsp 层 |
+| 7 | 决策型 `if` 嵌套超过 3 层（带 `else` 的决策金字塔；单分支守卫不计） | ERROR | 非 bsp 层 |
 | 8 | 未分层文件的平台调用 | WARN | 未分层文件 |
 | 9 | APP 直调 BSP、APP 越权调用 OSAL | ERROR | `app/` |
 | 10 | 入口胶水层超过行数上限 | ERROR | `glue` |
 | 11 | ISR 内调用阻塞 / 格式化 / 动态内存函数 | ERROR | 所有 `.c` |
-| 12 | 固定地址段同址冲突；C 段属性未在 `.ld` 定义 | ERROR / WARN | 工程级 |
+| 12 | app/组件层出现 `HAL_Delay` / 裸 `delay_ms` 等阻塞延时 | ERROR / WARN | `app/`、`components/` |
+| 13 | 固定地址段同址冲突、未 4 字节对齐、C 段属性未在 `.ld` 定义且无通配覆盖、未标 `(NOLOAD)` | ERROR / WARN | 工程级 |
 
 第 11 项的函数名单：`HAL_Delay`、`osDelay`、`vTaskDelay`、`xQueueReceive`、`xSemaphoreTake`、`delay_ms`、`delay_us`、`printf`、`fprintf`、`sprintf`、`snprintf`、`malloc`、`calloc`、`realloc`、`free`。
 函数名匹配 `*_IRQHandler`、`*_isr`、`*_ISR`、`isr_*`。
 
-第 12 项解析 `*.ld` 中形如 `.name 0x20003000 (NOLOAD) :` 的显式地址段，同址两段即报冲突；同时把 C 里 `__attribute__((section("...")), used)` 的段名与 `.ld` 对账。
+第 13 项解析 `*.ld` 中形如 `.name 0x20003000 (NOLOAD) :` 的显式地址段：同址两段、地址未 4 字节对齐判 ERROR；
+C 里 `__attribute__((section("...")), used)` 的段名必须能在 `.ld` 中找到同名段或被 `*(.xxx*)` 通配覆盖，
+否则判 ERROR（这类缺陷表现为“头文件写的回读地址与实际落点不一致”，读回来是别的内容）；已定义但未标 `(NOLOAD)` 判 WARN。
 
 ## 豁免
 
@@ -91,10 +94,12 @@ uint32_t g_dbg_counter;     // arch-allow:snapshot
 
 | 场景 | 现象 | 处理 |
 |---|---|---|
-| 字模 / 查表渲染循环 | `for → for → if → if` 被算作 4 层 | 该行加 `arch-allow`，或在规范中接受 |
-| `switch` + `if` 状态机 | 缩进层级被算成嵌套 | 同上；或改用表驱动 |
+| `switch` + `if` 状态机 | 少数分支仍可能被判成决策嵌套 | 确认后该行加 `arch-allow`，或改用表驱动 |
 | CMSIS 必需符号 | `SystemCoreClock`、`uwTick` | 已默认豁免 |
 | 固定地址快照 | 全局变量告警 | 已按段属性豁免 |
+
+> 字模 / 像素渲染的 `for → for → if (mask)` 曾是最主要的误报来源（占全部告警的 8%），
+> 已通过“只统计带 `else` 的决策分支”修掉；回归夹具里保留了一条真决策金字塔来覆盖该检查。
 
 ## 接进 CI
 

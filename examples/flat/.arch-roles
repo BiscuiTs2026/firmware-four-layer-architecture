@@ -1,0 +1,11 @@
+﻿# 扁平工程的角色清单：文件通配 = 归属层
+# 有这层清单，src/ 不拆目录也能被分层检查覆盖。
+#
+# 可用层：app / components / osal / bsp / common
+# 通配符 * 生效，路径相对工程根目录，一律用正斜杠。
+
+src/main.c          = glue
+src/board_config.h  = bsp
+src/types.h         = common
+src/i2c_soft.*      = bsp
+src/telemetry.*     = components
