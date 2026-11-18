@@ -322,7 +322,9 @@ err_t bsp_io_write(io_id_t id, bool level);   /* 上层不知道是 GPIOA 还是
 
 使用方只做三件事：
 
-1. 把 `check_layering.py` 单文件拷进自己的 `tools/`，只改文件头 `source-commit` 一行；
+1. 把 `check_layering.py` 单文件拷进自己的 `tools/`，来源提交改两处：`SOURCE_COMMIT` 常量与文件头
+   `source-commit` 注释（`--version` 与 `--lock` 读的是常量，只改注释等于没改，见
+   [docs/integration.md](docs/integration.md) §2.1）；
 2. 在 `tools/CHECKER.lock` 登记 `checker-version`、`source-repo`、`source-commit`、本地补丁说明；
 3. CI 里跑两条命令：`--version --lock tools/CHECKER.lock`（防漂移）与常规扫描（门槛），退出码即结论。
 
