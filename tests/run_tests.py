@@ -21,6 +21,8 @@ CASES = [
     ("tests/probe-issue2", os.path.join(ROOT, "tests", "probe-issue2", "expected.txt")),
     ("tests/probe-issue3", os.path.join(ROOT, "tests", "probe-issue3", "expected.txt")),
     ("tests/probe-issue4", os.path.join(ROOT, "tests", "probe-issue4", "expected.txt")),
+    ("tests/probe-call-fp", os.path.join(ROOT, "tests", "probe-call-fp", "expected.txt")),
+    ("tests/probe-hook-call", os.path.join(ROOT, "tests", "probe-hook-call", "expected.txt")),
 ]
 
 # 示例工程必须零 ERROR、零 WARN

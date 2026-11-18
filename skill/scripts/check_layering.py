@@ -29,7 +29,8 @@
      2. 平台头泄漏（非 bsp 层的 .c/.h 出现芯片头或 RTOS 头）→ ERROR
      3. 厂商类型泄漏（非 bsp 层的 .h 签名与 .c 代码里出现厂商类型）→ ERROR
      4. 反向依赖（下层 #include 上层头、本地 extern 声明上层函数、直接调用上层函数）→ ERROR；
-        bsp 包含 osal 头放行（符号级限制见第 17 项）；bsp 包含 components 的仅类型/钩子头 → WARN
+        bsp 包含 osal 头放行（符号级限制见第 17 项）；bsp 包含 components 的仅类型/钩子头 → WARN；
+        bsp 调用 components 的 *_hw_* 钩子 → WARN；函数原型不计为调用
      5. 跨模块全局变量（非 bsp 层 .c 文件作用域可写变量）→ ERROR
      6. extern 跨模块变量（非 bsp 层 .c 与 .h 里的 extern 变量声明）→ ERROR
      7. 决策型 if 嵌套超过 3 层 → ERROR（单分支守卫不计，避免字模/像素循环误报）
@@ -152,6 +153,12 @@ ISR_NAME = re.compile(
 EXTERN_FUNC = re.compile(r"\bextern\s+[^;{}()]*?\b([A-Za-z_]\w*)\s*\([^;{}]*\)\s*;")
 DEFINE_LINE = re.compile(r"^\s*#\s*define\s+([A-Za-z_]\w*)")
 CALL_NAME = re.compile(r"\b([A-Za-z_]\w*)\s*\(")
+
+# 只有函数原型的行：不是调用（避免把上层函数声明误判成反向调用）
+DECL_ONLY_LINE = re.compile(
+    r"^\s*(?!(?:return|if|else|for|while|switch|do|case|default|goto|sizeof)\b)"
+    r"(?:[A-Za-z_]\w*[\s*]+)+[A-Za-z_]\w*\s*\([^;{}]*\)\s*;\s*$"
+)
 
 SECTION_ATTR = re.compile(r'__attribute__\s*\(\s*\(\s*section\s*\(\s*"([^"]+)"')
 LD_SECTION = re.compile(
@@ -706,6 +713,8 @@ def main():
                 raw_line = raw_lines[no - 1] if no <= len(raw_lines) else ""
                 if "arch-allow" in raw_line or line.lstrip().startswith("#"):
                     continue
+                if DECL_ONLY_LINE.match(line):
+                    continue  # 函数原型不是调用，不判反向依赖
                 for m in CALL_NAME.finditer(line):
                     name = m.group(1)
                     if name in reported:
@@ -715,6 +724,11 @@ def main():
                         continue
                     only = next(iter(defs))
                     if layer_depth(only) > layer_depth(layer):
+                        if layer == "bsp" and only == "components" and "_hw_" in name:
+                            warns.append((rel, no,
+                                          f"端口层调用组件 ISR 钩子：{name}（按 *_hw_* 命名识别，确认仅中断上下文使用）"))
+                            reported.add(name)
+                            continue
                         errors.append((rel, no,
                                        f"反向依赖：{layer}/ 调用上层函数 {name}（定义在 {only}/）"))
                         reported.add(name)

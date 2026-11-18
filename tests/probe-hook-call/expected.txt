@@ -1,0 +1,5 @@
+# 对抗夹具：端口层调用组件 ISR 钩子应按 *_hw_* 命名放行（WARN），组件 API 仍 ERROR
+# 旧版两条都判 ERROR，模型项目端口层回投事件因此被判死
+[ERROR] bsp/port_dev.c:12 反向依赖：bsp/ 调用上层函数 dev_start（定义在 components/）
+[WARN ] bsp/port_dev.c:1 反向依赖（仅类型/钩子头）：bsp/ 包含 components/ 的 dev.h；确认只使用类型与 ISR 钩子
+[WARN ] bsp/port_dev.c:7 端口层调用组件 ISR 钩子：dev_hw_event（按 *_hw_* 命名识别，确认仅中断上下文使用）

@@ -62,7 +62,7 @@ APP → components → OSAL → BSP → 硬件
 
 ### 1.2 四条越层禁令
 
-1. **反向依赖**：下层不得 `#include` 上层（含 `common/` 包含任何层）。两个窄例外：`bsp` 为临界区保护可包含 OSAL 头（见 2.2 第 6 条）；`bsp` 为拿到句柄类型与 ISR 钩子可包含组件层的仅类型/钩子头（无平台头、无寄存器/厂商类型、无函数定义），检查器对此降为 WARN，含实现或平台细节的头仍判 ERROR。
+1. **反向依赖**：下层不得 `#include` 上层（含 `common/` 包含任何层）。两个窄例外：`bsp` 为临界区保护可包含 OSAL 头（见 2.2 第 6 条）；`bsp` 为拿到句柄类型与 ISR 钩子可包含组件层的仅类型/钩子头（无平台头、无寄存器/厂商类型、无函数定义），并调用其中的 `*_hw_*` 钩子，检查器对这类 include 与调用都降为 WARN；含实现、平台细节或非 `*_hw_*` 命名的组件 API 仍判 ERROR。
 2. **跨层直调**：APP 不得跳过组件直调 BSP；APP 对 OSAL 只允许时间原语（`osal_sleep_ms` / `osal_tick_ms` / `osal_now_ms`）；组件不得调 APP。
 3. **头文件泄漏**：公共 `.h` 不得出现 `<stm32f1xx_hal.h>`、`FreeRTOS.h`、`task.h`、`gd32f10x.h` 等平台头。
 4. **类型泄漏**：厂商类型（`SPI_HandleTypeDef`、`GPIO_TypeDef`、`UART_HandleTypeDef`、`dl_*` 等）不得出现在 `bsp/` 以外任何层可见的头文件签名中——含参数、返回值、结构体成员、typedef。
@@ -117,7 +117,7 @@ src/dbg_console.*= app
 
 ## 3. 各层细则
 
-**BSP**：只暴露语义化接口，屏蔽引脚与芯片差异；前缀 `bsp_`，签名统一 `err_t bsp_<对象>_<动作>(...)`；引脚映射、时钟、上下拉、复用全封在 `.c` 内。位时序原语（如 `bsp_delay_us`）也归 BSP，禁止为此 include OSAL。临界区原语例外见 2.2 第 6 条；为拿到组件定义的句柄类型与 ISR 钩子，可包含组件的仅类型/钩子头（推荐命名 `*_types.h`，只放 `typedef` 与钩子原型），检查器把这类 include 降为 WARN，含函数定义、平台头或寄存器的头仍判 ERROR。
+**BSP**：只暴露语义化接口，屏蔽引脚与芯片差异；前缀 `bsp_`，签名统一 `err_t bsp_<对象>_<动作>(...)`；引脚映射、时钟、上下拉、复用全封在 `.c` 内。位时序原语（如 `bsp_delay_us`）也归 BSP，禁止为此 include OSAL。临界区原语例外见 2.2 第 6 条；为拿到组件定义的句柄类型与 ISR 钩子，可包含组件的仅类型/钩子头（推荐命名 `*_types.h`，只放 `typedef` 与钩子原型），并调用其中的钩子。ISR 钩子统一用 `_hw_` 命名段标识（如 `pm_uart_hw_rx_byte`、`pm_spi_hw_done`），检查器据此把 include 与钩子调用降为 WARN；含函数定义、平台头、寄存器的头，以及非 `_hw_` 命名的组件 API 调用仍判 ERROR。
 
 ```c
 err_t bsp_io_write(io_id_t id, bool level);   /* 上层不知道是 GPIOA 还是 GPIOB */
