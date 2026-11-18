@@ -132,7 +132,7 @@ cmake --build build-host
 ## 检查器覆盖的 17 项
 
 越层调用平台 API（含寄存器与裸地址 MMIO）、平台头泄漏、厂商类型泄漏（`.h` 与 `.c`）、
-反向依赖（include / 本地 extern / 直接调用；`bsp` 包含仅类型/钩子头降为 WARN）、跨模块全局变量、
+反向依赖（include / 本地 extern / 直接调用；`bsp` 包含仅类型/钩子头、调用 `*_hw_*` 钩子降为 WARN）、跨模块全局变量、
 `extern` 跨模块变量（`.c` 与 `.h`）、决策型 `if` 嵌套超 3 层、未分层文件的平台调用、
 APP 直调 BSP / 越权调 OSAL、胶水层超长、ISR 内阻塞调用（含 `SysTick_Handler`）、
 app/组件层阻塞延时、固定地址段（同址/对齐/通配/未定义/区间重叠）、宏间接越层、唯一 `main.c`、

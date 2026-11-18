@@ -58,7 +58,7 @@ src/logic_*.h      = components
 | 1 | 越层调用 HAL / LL / SPL / RTOS，越层访问寄存器（含 `RCC->APBxENR`、`SysTick->VAL`、`SCB->*`、裸地址 MMIO） | ERROR | `app/`、`components/` |
 | 2 | 平台头泄漏 | ERROR | 非 bsp 层；`osal/*.c` 作为移植实现豁免 |
 | 3 | 厂商类型泄漏（头文件签名与 `.c` 代码） | ERROR | 非 bsp 层 |
-| 4 | 反向依赖：include 上层头、本地 `extern` 声明上层函数、直接调用上层函数。例外：`bsp` 包含 `components` 的**仅类型/钩子头**（无平台头、无寄存器/厂商类型、无函数定义）→ WARN；`bsp` 包含 `osal` 头放行，符号级限制见第 17 项 | ERROR / WARN | 全部已分层文件 |
+| 4 | 反向依赖：include 上层头、本地 `extern` 声明上层函数、直接调用上层函数（函数原型不计为调用）。例外：`bsp` 包含 `components` 的**仅类型/钩子头**（无平台头、无寄存器/厂商类型、无函数定义）→ WARN；`bsp` 调用 `components` 的 `*_hw_*` 钩子 → WARN；`bsp` 包含 `osal` 头放行，符号级限制见第 17 项 | ERROR / WARN | 全部已分层文件 |
 | 5 | 跨模块全局变量（文件作用域可写变量） | ERROR | 非 bsp 层 `.c` |
 | 6 | `extern` 跨模块变量 | ERROR | 非 bsp 层 `.c` 与 `.h` |
 | 7 | 决策型 `if` 嵌套超过 3 层（带 `else` 的决策金字塔；单分支守卫不计） | ERROR | 非 bsp 层 |
