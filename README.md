@@ -127,7 +127,7 @@ layers = app, hal
 | `examples/good-hal/` | HAL | 主机侧语法编译（CMake + host stub） | 目标板构建与上板行为 |
 | `examples/good-baremetal/` | 寄存器 + 固定地址快照 | 主机侧语法编译 | 目标板构建与上板行为 |
 | `examples/flat/` | 扁平 `src/` + `.arch-roles` | 主机侧语法编译 | 目标板构建与上板行为 |
-| `examples/two-layer/` | 两层 `app` + `hal` | 检查器零发现（`tests/run_tests.py`） | 主机侧编译、目标板构建与上板行为 |
+| `examples/two-layer/` | 两层 `app` + `hal` | 检查器零发现 + 主机侧语法编译（arm-none-eabi-gcc 14.3.1，零警告） | 目标板构建与上板行为 |
 
 主机侧编译使用 `tests/host-stubs/` 里的最小 CMSIS/HAL 头，只验证 C 语法、头文件路径与层间接口一致性：
 
@@ -135,6 +135,18 @@ layers = app, hal
 cmake -S . -B build-host -DFOUR_LAYER_HOST_CHECK=ON
 cmake --build build-host
 ```
+
+没有宿主 gcc、只有 `arm-none-eabi-gcc` 的机器（例如 Windows 上的 Cube 工具链）可以显式指定编译器：
+
+```powershell
+cmake -S . -B build-host -G Ninja `
+  -DCMAKE_C_COMPILER="$env:LOCALAPPDATA\stm32cube\bundles\gnu-tools-for-stm32\14.3.1+st.2\bin\arm-none-eabi-gcc.exe" `
+  -DCMAKE_MAKE_PROGRAM="$env:LOCALAPPDATA\stm32cube\bundles\ninja\1.13.2+st.1\bin\ninja.exe"
+cmake --build build-host
+```
+
+顶层 `CMakeLists.txt` 已设 `CMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY`，否则交叉编译器在 CMake
+的“链接可执行文件”探测阶段会因缺主机 CRT 失败。产物是静态库，不链接、不运行。
 
 **这不是完整固件工程。** 目标板构建需要 STM32CubeF1（CMSIS + HAL）与 `arm-none-eabi-gcc`，
 仓库不附带厂商包；把示例接进真实工程时，需要补启动文件、链接脚本、HAL 源文件与工具链文件。
