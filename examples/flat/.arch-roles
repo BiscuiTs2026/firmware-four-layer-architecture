@@ -7,5 +7,7 @@
 src/main.c          = glue
 src/board_config.h  = bsp
 src/types.h         = common
+src/bsp_time.*      = bsp
 src/i2c_soft.*      = bsp
+src/timebase.*      = osal
 src/telemetry.*     = components

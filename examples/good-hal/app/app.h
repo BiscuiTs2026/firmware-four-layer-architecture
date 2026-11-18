@@ -4,6 +4,6 @@
 #include "common.h"
 
 err_t app_init(void);
-void app_run(void);
+err_t app_run(void);
 
 #endif

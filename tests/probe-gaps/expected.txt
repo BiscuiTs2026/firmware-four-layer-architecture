@@ -1,0 +1,13 @@
+[ERROR] app/app_gap.h:7 extern 跨模块变量：extern uint32_t g_shared;
+[ERROR] app/app_main.c:10 越层访问寄存器
+[ERROR] app/app_main.c:11 越层访问寄存器
+[ERROR] app/app_main.c:12 越层访问寄存器
+[ERROR] app/app_main.c:13 越层访问寄存器
+[ERROR] app/app_main.c:14 宏间接越层：WRITE_STATUS_LED（定义在 components 层 components/comp_led_api.h）
+[ERROR] bsp/bsp_gap.c:7 反向依赖：bsp/ 声明上层函数 comp_secret（定义在 components/）
+[ERROR] components/comp_bad.c:16 厂商类型泄漏：GPIO_TypeDef
+[ERROR] components/comp_led_api.h:7 宏间接越层：WRITE_STATUS_LED 展开到下层调用/寄存器
+[ERROR] ld/app.ld:16 固定地址段区间重叠：.gap_a [0x20003000-0x2000303F] 与 .gap_b [0x20003020-0x2000305F]
+[ERROR] ld/app.ld:23 固定地址段 .gap_c 使用通配符 *(.gap_c*)；必须写成 *(.gap_c)，避免吞并后续段
+[ERROR] main.c:1 存在多个 main.c（app/main.c, main.c）；入口只允许一个
+[ERROR] main.c:8 ISR SysTick_Handler 内调用 printf()（只允许置标志/发消息/清中断）

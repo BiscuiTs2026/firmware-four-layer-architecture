@@ -5,6 +5,6 @@
 #include "common.h"
 
 err_t comp_blink_init(uint32_t half_period_ms);
-void comp_blink_task(void);
+err_t comp_blink_task(void);
 
 #endif

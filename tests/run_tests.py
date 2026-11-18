@@ -9,11 +9,13 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import tempfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CHECKER = os.path.join(ROOT, "skill", "scripts", "check_layering.py")
 CASES = [
     ("tests/probe", os.path.join(ROOT, "tests", "probe", "expected.txt")),
+    ("tests/probe-gaps", os.path.join(ROOT, "tests", "probe-gaps", "expected.txt")),
     ("tests/probe-flat", os.path.join(ROOT, "tests", "probe-flat", "expected.txt")),
     ("examples/bad", os.path.join(ROOT, "examples", "bad", "expected.txt")),
 ]
@@ -78,12 +80,31 @@ def run_clean(rel_root):
     return not findings and proc.returncode == 0
 
 
+def run_unlayered_guard():
+    """没有任何分层信息时必须失败，不能以退出码 0 静默通过。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        with open(os.path.join(tmp, "app.c"), "w", encoding="utf-8") as fh:
+            fh.write('#include "stm32f1xx_hal.h"\nvoid f(void) { HAL_Init(); }\n')
+        proc = subprocess.run(
+            [sys.executable, CHECKER, tmp],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+    ok = proc.returncode == 1 and "未发现任何分层目录或角色清单" in proc.stdout
+    status = "PASS" if ok else "FAIL"
+    print(f"[{status}] 无角色清单守卫：退出码 {proc.returncode}（期望 1）")
+    return ok
+
+
 def main():
     ok = True
     for rel_root, expected_path in CASES:
         ok = run_case(rel_root, expected_path) and ok
     for rel_root in CLEAN:
         ok = run_clean(rel_root) and ok
+    ok = run_unlayered_guard() and ok
     return 0 if ok else 1
 
 

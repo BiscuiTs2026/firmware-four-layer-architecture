@@ -1,6 +1,7 @@
-#include "i2c_soft.h"
+﻿#include "i2c_soft.h"
 
 #include "board_config.h"
+#include "bsp_time.h"
 #include "stm32f1xx.h"
 
 /* 软件 I2C：SCL=PB6，SDA=PB7，开漏输出 */
@@ -29,13 +30,8 @@ static uint8_t sda_read(void)
   return (uint8_t)((GPIOB->IDR & (1UL << 7U)) != 0U);
 }
 
-/* 器件手册要求的半周期延时，约 5 us @ 8 MHz */
-static void i2c_delay(void)
-{
-  for (volatile uint32_t i = 0U; i < 20U; i++)
-  {
-  }
-}
+/* 器件手册要求的半周期延时约 5 us；BSP 自带微秒原语，不依赖 OSAL */
+#define I2C_HALF_PERIOD_US 5U
 
 err_t i2c_soft_init(void)
 {
@@ -53,9 +49,9 @@ static void i2c_start(void)
 {
   sda_high();
   scl_high();
-  i2c_delay();
+  bsp_delay_us(I2C_HALF_PERIOD_US);
   sda_low();
-  i2c_delay();
+  bsp_delay_us(I2C_HALF_PERIOD_US);
   scl_low();
 }
 
@@ -63,9 +59,9 @@ static void i2c_stop(void)
 {
   sda_low();
   scl_high();
-  i2c_delay();
+  bsp_delay_us(I2C_HALF_PERIOD_US);
   sda_high();
-  i2c_delay();
+  bsp_delay_us(I2C_HALF_PERIOD_US);
 }
 
 static err_t i2c_write_byte(uint8_t byte)
@@ -80,9 +76,9 @@ static err_t i2c_write_byte(uint8_t byte)
     {
       sda_low();
     }
-    i2c_delay();
+    bsp_delay_us(I2C_HALF_PERIOD_US);
     scl_high();
-    i2c_delay();
+    bsp_delay_us(I2C_HALF_PERIOD_US);
     scl_low();
     byte = (uint8_t)(byte << 1U);
   }
@@ -90,7 +86,7 @@ static err_t i2c_write_byte(uint8_t byte)
   /* 第 9 拍读 ACK */
   sda_high();
   scl_high();
-  i2c_delay();
+  bsp_delay_us(I2C_HALF_PERIOD_US);
   if (sda_read() != 0U)
   {
     scl_low();

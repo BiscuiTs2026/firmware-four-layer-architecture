@@ -22,7 +22,7 @@
 [ERROR] components/comp_sensor.h:6 厂商类型泄漏：SPI_HandleTypeDef
 [ERROR] components/comp_timer.c:6 ISR TIM2_IRQHandler 内调用 printf(
 [ERROR] components/comp_timer.c:7 ISR TIM2_IRQHandler 内调用 delay_ms(
-[ERROR] ld/app.ld:12 固定地址段冲突：
+[ERROR] ld/app.ld:13 固定地址段冲突：
 [ERROR] osal/osal.h:4 平台头泄漏：FreeRTOS.h
 [ERROR] osal/osal_port.c:2 反向依赖：osal/ 包含 app/ 的 app.h
 [ERROR] components/comp_snapshot.c:9 固定地址段 .snap 未在链接脚本定义
