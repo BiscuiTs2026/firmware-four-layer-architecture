@@ -16,6 +16,8 @@ description: 按 BSP / OSAL / 组件 / APP 四层生成或审查 MCU 固件，�
    - 无上述文件、有自写启动文件与链接脚本 → 裸机形态。
 3. 判断判层方式：有 `app/ bsp/ osal/ components/` 目录就直接用；扁平 `src/` 先写 `.arch-roles`
    （角色：`glue` / `app` / `components` / `osal` / `bsp` / `common`）。
+   层数不是四层时（例如只有 `app` + `hal`），在清单里用 `alias hal = bsp` 与 `layers = app, hal`
+   声明，不要为了通过检查改目录；`third_party/` 等厂商包用 `ignore` 挡掉。
 4. 按约束写或改代码。
 5. 跑 `scripts/check_layering.py <工程根目录>`，修到无 ERROR 且无未豁免 WARN。
 6. 按交付合同输出：改动清单、依赖方向、接口变更、时序影响、自检表、验证建议、技术债。
@@ -40,6 +42,8 @@ description: 按 BSP / OSAL / 组件 / APP 四层生成或审查 MCU 固件，�
   但该段必须在 `.ld` 里有同名显式定义（通配覆盖不算），否则判为未定义段。
 - 检查器通过 ≠ 规范全部满足。初始化顺序、ISR 与主循环契约、回调穿层没有静态检查，
   见 `../rules.md` 第 13 节，遇到必须先与用户约定。
+- 检查器被其它工程引用时走单文件拷贝 + `tools/CHECKER.lock`，规则问题回灌上游而不是本地改，
+  见 `../docs/integration.md`。
 
 ## 不要做的事
 

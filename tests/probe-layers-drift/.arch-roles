@@ -1,0 +1,6 @@
+# 清单与实际代码不一致：声明只有 app + hal，却仍有一个 osal 层文件
+alias hal = bsp
+layers = app, hal
+
+src/app_*.*      = app
+src/legacy_*.c   = osal

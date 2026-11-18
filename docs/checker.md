@@ -23,6 +23,7 @@ python3 skill/scripts/check_layering.py <工程根目录> [选项]
 
 `--version` 输出的 `checker-version` 必须与文件里的 `CHECKER_VERSION` 常量一致，
 `tests/run_tests.py` 里有一条回归专门检查这一点以及锁文件的一致/不一致两种退出码。
+单文件被其它工程引用时的锁文件格式见 [integration.md](integration.md)。
 
 **没有任何分层信息时默认返回 1。** 这是为了避免“全工程未分层 → 0 ERROR → 绿灯空转”；
 确实只想统计未分层文件时，显式加 `--allow-unlayered`。
@@ -49,6 +50,24 @@ src/logic_*.h      = components
 - 自上而下**先匹配先生效**，请把更具体的规则放前面；
 - 角色只能是 `bsp` / `osal` / `components` / `app` / `glue` / `common`；
 - 目录模式与清单模式同时存在时，清单优先。
+
+**三条指令**（写在清单顶部，用于非四层工程与带厂商包的工程）：
+
+```ini
+alias hal = bsp              # 把工程自己的层名映射到内建层；映射后按内建层深度判定
+layers = app, hal            # 声明实际存在的层；未声明的层不参与判定
+ignore = third_party/, build-*/   # 不参与扫描的路径，可多行，支持目录前缀与通配
+```
+
+- `alias` 的目标只能是内建角色，不支持链式别名；`alias` 必须写在用到它的行之前。
+- `layers` 省略时按六层全在判定（原有四层工程行为不变）。声明后：
+  - 未声明的层不参与判定；**没有 `components` 时 APP 直调 BSP 放行**（两层工程的唯一判据差异）；
+  - 文件解析出的层不在声明内 → ERROR，防止清单与代码脱节；
+  - `glue` / `common` 始终可用，不必声明。
+- `ignore` 相对工程根，`third_party/` 这类目录名可匹配任意深度的同名目录。
+- 报错信息里始终使用内建层名（`alias hal = bsp` 之后显示 `bsp/`），便于上游统一收集误报。
+
+两者的完整写法与判定口径见 [integration.md](integration.md) 第 3 节。
 
 **优先级顺序**：角色清单 → 目录判定 → 胶水文件名自动识别（`main.c`、`startup_*`、`system_*`、`*_it.c`、`*_irq.c`）。
 
@@ -127,12 +146,25 @@ uint32_t g_dbg_counter;     // arch-allow:snapshot
 
 ## 接进 CI
 
+本仓库自身：
+
 ```yaml
 - name: layering
   run: |
     python3 skill/scripts/check_layering.py .
     python3 tests/run_tests.py
 ```
+
+其它工程引用本检查器（单文件拷进 `tools/`）时，CI 跑两条命令：
+
+```yaml
+- name: 检查器版本漂移
+  run: python3 tools/check_layering.py --version --lock tools/CHECKER.lock
+- name: 分层检查
+  run: python3 tools/check_layering.py .
+```
+
+接入方式、锁文件格式、升级与回灌流程见 [integration.md](integration.md)。
 
 建议分层：
 

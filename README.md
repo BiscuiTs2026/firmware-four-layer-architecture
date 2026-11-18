@@ -77,6 +77,35 @@ python3 tests/run_tests.py
 **没有分层目录、也没有角色清单时默认返回 1。** 早期版本会返回 0，导致“什么都没检查却绿灯”；
 现在必须显式加 `--allow-unlayered` 才会放行。退出码可以直接用作 CI 门槛。
 
+## 接进别的工程
+
+既有的真实工程往往不按四层建目录，也不该为了装检查器重构一遍。检查器支持**单文件拷出使用**：
+
+```
+<你的工程>/
+├── .arch-roles              # 层名映射 + alias / layers / ignore 指令
+├── tools/
+│   ├── check_layering.py    # 从本仓库某个 commit 原样拷入，只改文件头 source-commit
+│   └── CHECKER.lock         # 同步点：版本、来源仓、来源提交
+```
+
+只依赖 Python 3.8+ 标准库，不需要子模块、不需要安装、不需要检出本仓库。CI 两条命令：
+
+```bash
+python3 tools/check_layering.py --version --lock tools/CHECKER.lock   # 版本漂移
+python3 tools/check_layering.py .                                     # 分层门槛
+```
+
+只有两层（`app` + `hal`）的工程用 `.arch-roles` 声明即可，见 [examples/two-layer/](examples/two-layer/)：
+
+```ini
+alias hal = bsp
+layers = app, hal
+```
+
+两层的判定口径（`app` 直调 `hal` 放行、`hal` 反调 `app` 仍是 ERROR）、接入理由、
+升级步骤与**规则回灌流程**见 [docs/integration.md](docs/integration.md)。
+
 ## 真实效果（作者自己的工程，非构造样例）
 
 在一套 3569 行的裸机工程（STM32F103C8T6，6.6 KB Flash）上实测：
@@ -98,6 +127,7 @@ python3 tests/run_tests.py
 | `examples/good-hal/` | HAL | 主机侧语法编译（CMake + host stub） | 目标板构建与上板行为 |
 | `examples/good-baremetal/` | 寄存器 + 固定地址快照 | 主机侧语法编译 | 目标板构建与上板行为 |
 | `examples/flat/` | 扁平 `src/` + `.arch-roles` | 主机侧语法编译 | 目标板构建与上板行为 |
+| `examples/two-layer/` | 两层 `app` + `hal` | 检查器零发现（`tests/run_tests.py`） | 主机侧编译、目标板构建与上板行为 |
 
 主机侧编译使用 `tests/host-stubs/` 里的最小 CMSIS/HAL 头，只验证 C 语法、头文件路径与层间接口一致性：
 
@@ -119,13 +149,17 @@ cmake --build build-host
 | `examples/good-hal/` | 合规示例：HAL 形态全链条 |
 | `examples/good-baremetal/` | 合规示例：寄存器级全链条 + 固定地址快照 |
 | `examples/flat/` | 合规示例：扁平 `src/` + `.arch-roles`，不拆目录也能过检查 |
+| `examples/two-layer/` | 合规示例：两层 `app` + `hal`，演示 alias / layers 指令 |
 | `examples/bad/` | 违规样例：每条规则至少踩一次，附期望输出 |
 | `tests/probe/` | 回归夹具：目录分层模式，逐条植入违规 |
 | `tests/probe-gaps/` | 对抗夹具：专门覆盖历史漏报（ENR/SysTick/SCB/裸地址/宏/头文件 extern/反向调用） |
 | `tests/probe-flat/` | 回归夹具：角色清单模式 |
+| `tests/probe-two-layer/` | 回归夹具：两层工程 + alias / layers / ignore |
+| `tests/probe-layers-drift/` | 回归夹具：声明层集合与代码不一致 |
 | `tests/host-stubs/` | 主机侧语法检查用的最小 CMSIS/HAL 头 |
 | `tests/host-build/` | 主机侧 CMake 目标（只编译，不链接不运行） |
 | `docs/checker.md` | 检查项、豁免语法、误报与漏报 |
+| `docs/integration.md` | 外部工程接入、非四层写法、回灌流程与 gate 门槛 |
 | `docs/measurements.md` | 实测数据与缺陷分类 |
 | `docs/guide-zh.md` | 设计取舍说明 |
 

@@ -16,6 +16,7 @@ typedef enum
   GPIO_PIN_SET = 1
 } GPIO_PinState;
 
+#define GPIO_PIN_6 ((uint16_t)0x0040U)
 #define GPIO_PIN_13 ((uint16_t)0x2000U)
 
 void HAL_Init(void);

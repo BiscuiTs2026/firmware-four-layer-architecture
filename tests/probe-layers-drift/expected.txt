@@ -1,0 +1,4 @@
+# tests/probe-layers-drift 期望输出：声明层集合与代码不一致
+# 运行：python3 skill/scripts/check_layering.py tests/probe-layers-drift
+# layers 只声明 app + hal，但存在 osal 层文件，必须报出来而不是静默忽略。
+[ERROR] src/legacy_tick.c:1 角色 osal 不在角色清单 layers 声明内

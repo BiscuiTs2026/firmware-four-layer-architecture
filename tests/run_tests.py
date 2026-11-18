@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -24,10 +25,12 @@ CASES = [
     ("tests/probe-issue4", os.path.join(ROOT, "tests", "probe-issue4", "expected.txt")),
     ("tests/probe-call-fp", os.path.join(ROOT, "tests", "probe-call-fp", "expected.txt")),
     ("tests/probe-hook-call", os.path.join(ROOT, "tests", "probe-hook-call", "expected.txt")),
+    ("tests/probe-two-layer", os.path.join(ROOT, "tests", "probe-two-layer", "expected.txt")),
+    ("tests/probe-layers-drift", os.path.join(ROOT, "tests", "probe-layers-drift", "expected.txt")),
 ]
 
 # 示例工程必须零 ERROR、零 WARN
-CLEAN = ["examples/good-hal", "examples/good-baremetal", "examples/flat"]
+CLEAN = ["examples/good-hal", "examples/good-baremetal", "examples/flat", "examples/two-layer"]
 
 
 def load_expected(path):
@@ -104,6 +107,38 @@ def run_unlayered_guard():
     return ok
 
 
+def run_vendored_copy():
+    """把检查器单文件拷到工程外（模拟使用方 tools/）后，结果必须与仓库内一致。"""
+    target = os.path.join(ROOT, "tests", "probe-flat")
+    with tempfile.TemporaryDirectory() as tmp:
+        vendored = os.path.join(tmp, "tools", "check_layering.py")
+        os.makedirs(os.path.dirname(vendored))
+        shutil.copyfile(CHECKER, vendored)
+        proc = subprocess.run(
+            [sys.executable, vendored, target],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        ver = subprocess.run(
+            [sys.executable, vendored, "--version"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+    findings = [line for line in proc.stdout.splitlines() if line.startswith(("[ERROR]", "[WARN ]"))]
+    ok = (
+        len(findings) == len(load_expected(os.path.join(target, "expected.txt")))
+        and ver.returncode == 0
+        and "checker-version:" in ver.stdout
+    )
+    status = "PASS" if ok else "FAIL"
+    print(f"[{status}] 单文件拷出运行：{len(findings)} 条发现，--version 退出码 {ver.returncode}")
+    return ok
+
+
 def run_version_lock():
     """--version 的输出必须等于文件里声明的版本，锁文件一致返回 0、不一致返回 1。"""
     with open(CHECKER, encoding="utf-8") as fh:
@@ -156,6 +191,7 @@ def main():
     for rel_root in CLEAN:
         ok = run_clean(rel_root) and ok
     ok = run_unlayered_guard() and ok
+    ok = run_vendored_copy() and ok
     ok = run_version_lock() and ok
     return 0 if ok else 1
 

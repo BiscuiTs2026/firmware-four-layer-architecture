@@ -1,0 +1,14 @@
+# 两层工程示例：业务层 app + 硬件层 hal
+#
+# 检查器内建角色是四层（bsp/osal/components/app）。工程只有两层时，
+# 用 alias 把自己的硬件层名映射到 bsp，用 layers 声明实际存在的层。
+alias hal = bsp
+
+# 声明本工程只有 app 与 hal 两层：
+# 未声明的层不参与判定；没有 components 层时，app 直调 bsp 视为正常依赖。
+layers = app, hal
+
+# 文件 → 层（glue 与 common 始终可用，不必写进 layers）
+src/main.c       = glue
+src/app_logic.*  = app
+src/hal_gpio.*   = hal

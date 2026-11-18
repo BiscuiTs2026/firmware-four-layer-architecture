@@ -1,0 +1,13 @@
+# 两层工程夹具：app + hal
+#
+# 覆盖三件事：
+#   1. alias 把 hal 映射到 bsp，反向依赖消息里显示内建层名；
+#   2. layers 没有 components 时，app 直调 bsp 不算违规；
+#   3. ignore 让厂商目录不产生"未分层文件"噪音。
+alias hal = bsp
+layers = app, hal
+ignore = third_party/
+
+src/main.c       = glue
+src/app_logic.*  = app
+src/hal_gpio.*   = hal

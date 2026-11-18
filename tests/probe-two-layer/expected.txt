@@ -1,0 +1,4 @@
+# tests/probe-two-layer 期望输出（两层工程 + alias / layers / ignore）
+# 运行：python3 skill/scripts/check_layering.py tests/probe-two-layer
+# app 直调 hal 不报错；third_party/ 被 ignore，不产生未分层噪音；只留 hal 反调 app 一条。
+[ERROR] src/hal_gpio.c:4 反向依赖：bsp/ 声明上层函数 app_logic_run（定义在 app/）

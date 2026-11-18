@@ -61,3 +61,14 @@ target_link_libraries(example_flat PRIVATE host_stubs)
 target_include_directories(example_flat PRIVATE
   ${EXAMPLES_DIR}/flat/src
 )
+
+# two-layer：两层工程（app + hal）+ alias / layers 指令
+add_library(example_two_layer STATIC
+  ${EXAMPLES_DIR}/two-layer/src/main.c
+  ${EXAMPLES_DIR}/two-layer/src/app_logic.c
+  ${EXAMPLES_DIR}/two-layer/src/hal_gpio.c
+)
+target_link_libraries(example_two_layer PRIVATE host_stubs)
+target_include_directories(example_two_layer PRIVATE
+  ${EXAMPLES_DIR}/two-layer/src
+)
