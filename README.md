@@ -85,7 +85,7 @@ python3 tests/run_tests.py
 <你的工程>/
 ├── .arch-roles              # 层名映射 + alias / layers / ignore 指令
 ├── tools/
-│   ├── check_layering.py    # 从本仓库某个 commit 原样拷入，只改文件头 source-commit
+│   ├── check_layering.py    # 从本仓库某个 commit 原样拷入；来源提交要改两处，见 docs/integration.md
 │   └── CHECKER.lock         # 同步点：版本、来源仓、来源提交
 ```
 
