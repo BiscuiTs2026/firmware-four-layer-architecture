@@ -58,7 +58,7 @@ src/logic_*.h      = components
 | 1 | 越层调用 HAL / LL / SPL / RTOS，越层访问寄存器（含 `RCC->APBxENR`、`SysTick->VAL`、`SCB->*`、裸地址 MMIO） | ERROR | `app/`、`components/` |
 | 2 | 平台头泄漏 | ERROR | 非 bsp 层；`osal/*.c` 作为移植实现豁免 |
 | 3 | 厂商类型泄漏（头文件签名与 `.c` 代码） | ERROR | 非 bsp 层 |
-| 4 | 反向依赖：include 上层头、本地 `extern` 声明上层函数、直接调用上层函数 | ERROR | 全部已分层文件 |
+| 4 | 反向依赖：include 上层头、本地 `extern` 声明上层函数、直接调用上层函数。例外：`bsp` 包含 `components` 的**仅类型/钩子头**（无平台头、无寄存器/厂商类型、无函数定义）→ WARN；`bsp` 包含 `osal` 头放行，符号级限制见第 17 项 | ERROR / WARN | 全部已分层文件 |
 | 5 | 跨模块全局变量（文件作用域可写变量） | ERROR | 非 bsp 层 `.c` |
 | 6 | `extern` 跨模块变量 | ERROR | 非 bsp 层 `.c` 与 `.h` |
 | 7 | 决策型 `if` 嵌套超过 3 层（带 `else` 的决策金字塔；单分支守卫不计） | ERROR | 非 bsp 层 |
@@ -71,6 +71,7 @@ src/logic_*.h      = components
 | 14 | 宏间接越层：上层使用下层定义的硬件宏，或上层本地宏展开到下层调用/寄存器 | ERROR | `app/`、`components/` |
 | 15 | 唯一入口：第二个 `main.c` | ERROR | 工程级 |
 | 16 | 全工程没有分层目录或角色清单 | ERROR | 工程级 |
+| 17 | BSP 越权调用 OSAL：只允许 `*_critical_enter` / `*_critical_exit` / `*_tick_inc`，其余 `*osal_*` 调用（如 `osal_delay_ms`） | ERROR | `bsp/` |
 
 第 11 项的阻塞函数名单：`HAL_Delay`、`osDelay`、`vTaskDelay`、`xQueueReceive`、`xSemaphoreTake`、`delay_ms`、`delay_us`、`printf`、`fprintf`、`sprintf`、`snprintf`、`malloc`、`calloc`、`realloc`、`free`。
 ISR 函数名匹配 `*_IRQHandler`、`*_isr`、`*_ISR`、`isr_*`，以及 CMSIS 内核中断
@@ -133,5 +134,5 @@ uint32_t g_dbg_counter;     // arch-allow:snapshot
 - `ERROR` 一律阻断合并；
 - `WARN` 首次接入时允许存在，但要在 `TECH_DEBT.md` 登记存量；
 - 回归夹具（`tests/`）的期望条数变化必须与检查器改动同一个提交；
-- 检查器通过只代表“它覆盖的 16 项”没有问题，不代表规范全部满足。
+- 检查器通过只代表“它覆盖的 17 项”没有问题，不代表规范全部满足。
   初始化顺序、ISR 与主循环契约、回调穿层没有静态检查（见 `rules.md` 第 13 节）。

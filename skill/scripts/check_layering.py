@@ -28,7 +28,8 @@
         RCC->APBxENR 或裸地址 MMIO）→ ERROR
      2. 平台头泄漏（非 bsp 层的 .c/.h 出现芯片头或 RTOS 头）→ ERROR
      3. 厂商类型泄漏（非 bsp 层的 .h 签名与 .c 代码里出现厂商类型）→ ERROR
-     4. 反向依赖（下层 #include 上层头、本地 extern 声明上层函数、直接调用上层函数）→ ERROR
+     4. 反向依赖（下层 #include 上层头、本地 extern 声明上层函数、直接调用上层函数）→ ERROR；
+        bsp 包含 osal 头放行（符号级限制见第 17 项）；bsp 包含 components 的仅类型/钩子头 → WARN
      5. 跨模块全局变量（非 bsp 层 .c 文件作用域可写变量）→ ERROR
      6. extern 跨模块变量（非 bsp 层 .c 与 .h 里的 extern 变量声明）→ ERROR
      7. 决策型 if 嵌套超过 3 层 → ERROR（单分支守卫不计，避免字模/像素循环误报）
@@ -42,6 +43,7 @@
     14. 宏间接越层（上层使用下层定义的硬件宏，或上层本地宏展开到下层调用/寄存器）→ ERROR
     15. 唯一入口：出现第二个 main.c → ERROR
     16. 工程完全没有分层目录或角色清单 → ERROR（可用 --allow-unlayered 显式关闭）
+    17. BSP 越权调用 OSAL → ERROR（仅允许 *critical_enter / *critical_exit / *tick_inc）
 
 豁免：
     - 行尾 `// arch-allow` 跳过该行全部检查；
@@ -127,6 +129,10 @@ GLOBAL_VAR = re.compile(
 EXTERN_VAR = re.compile(r"^extern\s+(?!.*\()\w.*;\s*$")
 
 BSP_PREFIX_CALL = re.compile(r"\b(bsp|osal)_[a-z][a-z0-9_]*\s*\(")
+
+# BSP 允许使用的 OSAL 符号：仅临界区进入/退出与 tick 递增（issue #4）
+OSAL_CALL = re.compile(r"\b((?:[A-Za-z_]\w*_)?osal_[A-Za-z_]\w*)\s*\(")
+BSP_OSAL_ALLOWED = ("critical_enter", "critical_exit", "tick_inc")
 
 # ISR 内禁止出现的调用
 ISR_BLOCKING = re.compile(
@@ -296,6 +302,21 @@ def read_source(path: str):
     with open(path, encoding="utf-8", errors="ignore") as fh:
         raw = fh.read()
     return raw, mask_comments(raw), raw.splitlines()
+
+
+def header_is_type_only(path: str) -> bool:
+    """判断头文件是否只含类型与函数原型（可被端口层包含，issue #3）。
+
+    含平台头、寄存器访问、厂商类型或函数定义的头都不算“仅类型头”。
+    """
+    raw, masked, _ = read_source(path)
+    if PLATFORM_HEADER.search(raw):
+        return False
+    if REG_ACCESS.search(masked) or MMIO_CAST.search(masked) or VENDOR_TYPE.search(masked):
+        return False
+    if next(iter_functions(masked), None) is not None:
+        return False
+    return True
 
 
 # ---------------------------------------------------------------- 结构分析
@@ -655,6 +676,7 @@ def main():
             unlayered_total += 1
 
         raw, masked, raw_lines = read_source(path)
+        local_funcs = {name for name, _, _, _ in iter_functions(masked)}
 
         for m in SECTION_ATTR.finditer(raw):
             c_sections.append((rel, m.group(1), raw.count("\n", 0, m.start()) + 1))
@@ -739,6 +761,9 @@ def main():
                 ):
                     m = pat.search(code)
                     if m:
+                        called = CALL_NAME.search(m.group(0))
+                        if called and called.group(1) in local_funcs:
+                            continue  # 本文件内定义的同名函数，不是厂商库（issue #2）
                         errors.append((rel, no, f"{label}：{m.group(0)}"))
                 if REG_ACCESS.search(code) or MMIO_CAST.search(code):
                     errors.append((rel, no, "越层访问寄存器"))
@@ -771,10 +796,29 @@ def main():
 
             for m in re.finditer(r'#\s*include\s*[<"]?([^>"]+)[>"]', code):
                 target = m.group(1).replace("\\", "/").split("/")[-1]
-                tgt_layer = header_index.get(target)
-                if tgt_layer and LAYER_DEPTH.get(tgt_layer, -1) > LAYER_DEPTH.get(layer, 99):
+                info = header_index.get(target)
+                if not info:
+                    continue
+                tgt_layer, tgt_rel = info
+                if LAYER_DEPTH.get(tgt_layer, -1) > LAYER_DEPTH.get(layer, 99):
+                    if layer == "bsp" and tgt_layer == "osal":
+                        break  # 端口层需要临界区原语与 tick（issue #4），符号级另有限制
+                    if layer == "bsp" and tgt_layer == "components":
+                        tgt_path = os.path.join(root, tgt_rel)
+                        if os.path.isfile(tgt_path) and header_is_type_only(tgt_path):
+                            warns.append((rel, no,
+                                          f"反向依赖（仅类型/钩子头）：{layer}/ 包含 {tgt_layer}/ 的 {target}；确认只使用类型与 ISR 钩子"))
+                            break
                     errors.append((rel, no, f"反向依赖：{layer}/ 包含 {tgt_layer}/ 的 {target}"))
                     break
+
+            if layer == "bsp":
+                for m in OSAL_CALL.finditer(code):
+                    name = m.group(1)
+                    if name.endswith(BSP_OSAL_ALLOWED):
+                        continue
+                    errors.append((rel, no,
+                                   f"BSP 越权调用 OSAL：{name}（仅允许 *critical_enter / *critical_exit / *tick_inc）"))
 
         if layer == "":
             if local_hits:
@@ -833,7 +877,7 @@ def main():
 
 
 def build_header_index(root: str, rules):
-    """头文件名 → 所在层。"""
+    """头文件名 → (所在层, 相对路径)。"""
     index = {}
     for path in iter_c_files(root):
         if not path.endswith(".h"):
@@ -842,7 +886,7 @@ def build_header_index(root: str, rules):
         layer = resolve_layer(rel, rules)
         if not layer:
             continue
-        index.setdefault(os.path.basename(path), layer)
+        index.setdefault(os.path.basename(path), (layer, rel))
     return index
 
 

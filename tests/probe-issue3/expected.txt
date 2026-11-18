@@ -1,0 +1,4 @@
+# 对抗夹具：issue #3 —— 端口层包含组件层“仅类型/钩子头”降级为 WARN，含函数定义的头仍 ERROR
+# 旧版两条都是 ERROR，无法表达“依赖倒置只依赖抽象”的合法形态
+[ERROR] bsp/port_hw.c:2 反向依赖：bsp/ 包含 components/ 的 pm_api.h
+[WARN ] bsp/port_hw.c:1 反向依赖（仅类型/钩子头）：bsp/ 包含 components/ 的 pm_uart.h

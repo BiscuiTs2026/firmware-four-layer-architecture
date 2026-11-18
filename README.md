@@ -6,7 +6,7 @@
 这个仓库把这些问题写成规范，并把其中**能静态识别的一部分**做成脚本；不能机检的部分明确标为人工评审或未定义。
 
 > 先说清楚能力边界：检查器是启发式文本分析，不是编译器，也不是 MISRA。
-> 它覆盖 16 项结构检查；初始化顺序、ISR 与主循环契约、回调穿层**没有**静态检查（见 [rules.md](rules.md) 第 13 节）。
+> 它覆盖 17 项结构检查；初始化顺序、ISR 与主循环契约、回调穿层**没有**静态检查（见 [rules.md](rules.md) 第 13 节）。
 > 检查器绿灯只代表它覆盖的那些项没问题。
 
 ## 它解决什么
@@ -35,13 +35,17 @@ APP → components → OSAL → BSP → 硬件
 | APP | `app/` | 流程编排、调组件 API | 碰寄存器、HAL、RTOS API、BSP |
 | 组件 | `components/` | 业务逻辑、算法、事件发布 | 碰硬件、跨组件包含内部头 |
 | OSAL | `osal/` | 时基、延时、互斥、队列 | 公共头暴露芯片头或 RTOS 头 |
-| BSP | `bsp/` | 寄存器、HAL、引脚映射、位时序原语 | 携带业务语义、反调 OSAL/组件 |
+| BSP | `bsp/` | 寄存器、HAL、引脚映射、位时序原语 | 携带业务语义、反调组件 API、调用 OSAL 临界区以外的接口 |
 | 胶水 | `main.c` 等 | 初始化、中断分发、调度 | 承载业务逻辑 |
 
 `common/` 放纯类型（`err_t`、枚举），任何层可 include，它不 include 任何层。
 
 位时序（软件 I2C、单总线）由 BSP 自带的 `bsp_delay_us` 完成，不依赖 OSAL；
 OSAL 可以基于 BSP 的时基实现毫秒接口。这是规范对“BSP 不能用 OSAL”的正式取舍，见 `rules.md` 2.2 第 5 条。
+
+BSP 另有两个窄例外：为保护任务/ISR 共享状态，可 include OSAL 头并使用
+`*_critical_enter` / `*_critical_exit` / `*_tick_inc`（其余 OSAL 调用仍判 ERROR）；
+端口层为拿到句柄类型与 ISR 钩子，可包含组件层的仅类型/钩子头（检查器降级为 WARN），见 `rules.md` 2.2 第 6 条与第 3 节。
 
 ## 两种工程形态
 
@@ -125,13 +129,14 @@ cmake --build build-host
 | `docs/measurements.md` | 实测数据与缺陷分类 |
 | `docs/guide-zh.md` | 设计取舍说明 |
 
-## 检查器覆盖的 16 项
+## 检查器覆盖的 17 项
 
 越层调用平台 API（含寄存器与裸地址 MMIO）、平台头泄漏、厂商类型泄漏（`.h` 与 `.c`）、
-反向依赖（include / 本地 extern / 直接调用）、跨模块全局变量、`extern` 跨模块变量（`.c` 与 `.h`）、
-决策型 `if` 嵌套超 3 层、未分层文件的平台调用、APP 直调 BSP / 越权调 OSAL、胶水层超长、
-ISR 内阻塞调用（含 `SysTick_Handler`）、app/组件层阻塞延时、固定地址段（同址/对齐/通配/未定义/区间重叠）、
-宏间接越层、唯一 `main.c`、全工程无分层信息。
+反向依赖（include / 本地 extern / 直接调用；`bsp` 包含仅类型/钩子头降为 WARN）、跨模块全局变量、
+`extern` 跨模块变量（`.c` 与 `.h`）、决策型 `if` 嵌套超 3 层、未分层文件的平台调用、
+APP 直调 BSP / 越权调 OSAL、胶水层超长、ISR 内阻塞调用（含 `SysTick_Handler`）、
+app/组件层阻塞延时、固定地址段（同址/对齐/通配/未定义/区间重叠）、宏间接越层、唯一 `main.c`、
+全工程无分层信息、BSP 越权调用 OSAL（仅允许临界区与 tick 三个原语）。
 
 豁免语法：行尾 `// arch-allow`（跳过该行），`// arch-allow:snapshot`（额外放行快照声明）。
 `SystemCoreClock` 等 CMSIS 必需符号默认豁免。
