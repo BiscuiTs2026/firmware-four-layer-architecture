@@ -1,0 +1,3 @@
+# 对抗夹具：issue #4 —— 端口层可 include OSAL 并使用临界区/tick，其余 OSAL 调用仍 ERROR
+# 旧版 :1 的 include 直接 ERROR（漏报合法用法），且不做符号级区分
+[ERROR] bsp/port_crit.c:14 BSP 越权调用 OSAL：osal_delay_ms（仅允许 *critical_enter / *critical_exit / *tick_inc）
