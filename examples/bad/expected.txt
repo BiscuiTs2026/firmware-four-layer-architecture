@@ -1,7 +1,7 @@
 # examples/bad 期望输出
 # 运行：python3 tests/run_tests.py
 # 规则：下面每一行都必须出现，且实际 ERROR/WARN 条数必须与这里一致。
-[ERROR] ld/app.ld:16 固定地址段冲突：
+[ERROR] ld/app.ld:17 固定地址段冲突：
 [ERROR] src/app_main.c:1 平台头泄漏：stm32f1xx.h
 [ERROR] src/app_main.c:8 跨模块全局变量：s_mode
 [ERROR] src/app_main.c:13 APP 直调 BSP：bsp_io_write

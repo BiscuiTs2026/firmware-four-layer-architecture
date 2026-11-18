@@ -24,27 +24,31 @@
             但只允许做初始化与中断分发，行数超限即判为"业务逻辑上移失败"。
 
 检查项：
-     1. 越层调用平台 API（app/ components/ 里出现 HAL/LL/SPL/RTOS 或寄存器）→ ERROR
+     1. 越层调用平台 API（app/ components/ 里出现 HAL/LL/SPL/RTOS、寄存器、SysTick/SCB、
+        RCC->APBxENR 或裸地址 MMIO）→ ERROR
      2. 平台头泄漏（非 bsp 层的 .c/.h 出现芯片头或 RTOS 头）→ ERROR
-     3. 厂商类型泄漏（非 bsp 层头文件签名里出现厂商类型）→ ERROR
-     4. 反向依赖（下层 #include 上层头文件）→ ERROR
+     3. 厂商类型泄漏（非 bsp 层的 .h 签名与 .c 代码里出现厂商类型）→ ERROR
+     4. 反向依赖（下层 #include 上层头、本地 extern 声明上层函数、直接调用上层函数）→ ERROR
      5. 跨模块全局变量（非 bsp 层 .c 文件作用域可写变量）→ ERROR
-     6. extern 跨模块变量（非 bsp 层出现 extern 变量声明）→ ERROR
+     6. extern 跨模块变量（非 bsp 层 .c 与 .h 里的 extern 变量声明）→ ERROR
      7. 决策型 if 嵌套超过 3 层 → ERROR（单分支守卫不计，避免字模/像素循环误报）
      8. 未分层文件的平台调用 → WARN
      9. APP 直调 BSP 或越权调用 OSAL → ERROR
-    10. 入口胶水层超过 --glue-max-lines → WARN
-    11. ISR 内调用阻塞/格式化/动态内存函数 → ERROR
+    10. 入口胶水层超过 --glue-max-lines → ERROR
+    11. ISR 内调用阻塞/格式化/动态内存函数 → ERROR（含 SysTick_Handler 等 CMSIS 内核中断）
     12. 阻塞延时：bsp 之外的 HAL_Delay → ERROR；app/组件层裸 delay_ms 等 → WARN
-    13. 固定地址段冲突（.ld 里两个段同址 / 未 4 字节对齐）→ ERROR；
-        C 里 section 属性未在 .ld 定义且未被通配覆盖 → ERROR；未标 (NOLOAD) → WARN
+    13. 固定地址段：同址、未 4 字节对齐、固定段内使用通配符、C 段未在 .ld 显式定义 → ERROR；
+        声明了长度（/* size: 0xNN */）时区间重叠 → ERROR；未标 (NOLOAD) → WARN
+    14. 宏间接越层（上层使用下层定义的硬件宏，或上层本地宏展开到下层调用/寄存器）→ ERROR
+    15. 唯一入口：出现第二个 main.c → ERROR
+    16. 工程完全没有分层目录或角色清单 → ERROR（可用 --allow-unlayered 显式关闭）
 
 豁免：
     - 行尾 `// arch-allow` 跳过该行全部检查；
     - 行尾 `// arch-allow:snapshot` 额外允许该行的全局变量声明（固定地址快照块）；
     - `SystemCoreClock` 属 CMSIS 必需符号，默认豁免。
 
-退出码：0 = 无 ERROR；1 = 存在 ERROR；2 = 用法或路径错误。
+退出码：0 = 无 ERROR；1 = 存在 ERROR（含"没有任何分层信息"）；2 = 用法或路径错误。
 """
 from __future__ import annotations
 
@@ -59,7 +63,7 @@ LAYER_DEPTH = {"common": -1, "bsp": 0, "osal": 1, "components": 2, "app": 3}
 LAYERS = set(LAYER_DEPTH)
 UPPER_LAYERS = {"app", "components"}
 NON_BSP_LAYERS = {"app", "components", "osal", "common"}
-APP_OSAL_ALLOWED = ("osal_sleep", "osal_tick_ms", "osal_now_ms", "osal_delay_ms")
+APP_OSAL_ALLOWED = {"osal_sleep_ms", "osal_tick_ms", "osal_now_ms"}
 BEGINNER_FILES = ("main.c", "main.cpp")
 
 # 入口胶水文件名特征：这些文件允许碰寄存器和 HAL
@@ -99,7 +103,16 @@ RTOS_CALL = re.compile(
 
 REG_ACCESS = re.compile(
     r"->\s*(ODR|IDR|MODER|OTYPER|OSPEEDR|PUPDR|AFR[HL]?|BSRR|BRR|CR[HL]?|SR|DR|EGR"
-    r"|CCR|ARR|PSC|CNT|DIER|SMCR|CFGR|PLLCFGR|BDTR|RCR)\d?\b"
+    r"|CCR|ARR|PSC|CNT|DIER|SMCR|CFGR|PLLCFGR|BDTR|RCR"
+    r"|APB[12]ENR|AHBENR|VAL|LOAD|CALIB|CTRL|VTOR|AIRCR|SCR|CCR2?|CPUID|ICSR"
+    r"|SHPR[0-9]?|MSP|PSP|PRIMASK|FAULTMASK|BASEPRI|CONTROL|FPCCR|FPCAR|FPDSCR)\d?\b"
+)
+
+# 裸地址 MMIO：*(volatile uint32_t *)0x4001080C 之类的直接寄存器访问
+MMIO_CAST = re.compile(
+    r"\(\s*(?:volatile\s+)?(?:const\s+)?"
+    r"(?:u?int(?:8|16|32|64)_t|uintptr_t|unsigned\s+(?:int|long|char))"
+    r"\s*\*\s*\)\s*0x[0-9A-Fa-f]{5,}\b"
 )
 
 SCALAR = (
@@ -123,13 +136,25 @@ ISR_BLOCKING = re.compile(
     r"|printf|fprintf|sprintf|snprintf|vsnprintf"
     r"|malloc|calloc|realloc|free)\s*\("
 )
-ISR_NAME = re.compile(r"(IRQHandler$|_isr$|_ISR$|^isr_|_isr_|_IRQHandler)")
+ISR_NAME = re.compile(
+    r"(IRQHandler$|_isr$|_ISR$|^isr_|_isr_|_IRQHandler"
+    r"|^SysTick_Handler$|^NMI_Handler$|^HardFault_Handler$|^MemManage_Handler$"
+    r"|^BusFault_Handler$|^UsageFault_Handler$|^SVC_Handler$|^DebugMon_Handler$"
+    r"|^PendSV_Handler$)"
+)
+
+EXTERN_FUNC = re.compile(r"\bextern\s+[^;{}()]*?\b([A-Za-z_]\w*)\s*\([^;{}]*\)\s*;")
+DEFINE_LINE = re.compile(r"^\s*#\s*define\s+([A-Za-z_]\w*)")
+CALL_NAME = re.compile(r"\b([A-Za-z_]\w*)\s*\(")
 
 SECTION_ATTR = re.compile(r'__attribute__\s*\(\s*\(\s*section\s*\(\s*"([^"]+)"')
 LD_SECTION = re.compile(
-    r"(?m)^\s*(\.[A-Za-z0-9_.]+)\s+(0x[0-9A-Fa-f]{6,})\s*(\(NOLOAD\))?\s*:"
+    r"(?m)^[ \t]*(\.[A-Za-z0-9_.]+)[ \t]+(0x[0-9A-Fa-f]{6,})[ \t]*(\(NOLOAD\))?[ \t]*:[ \t\r\n]*\{"
 )
 LD_WILDCARD = re.compile(r"\*\(\s*(\.[A-Za-z0-9_.*?\[\]]+)\s*\)")
+LD_SIZE_DIRECTIVE = re.compile(r"\.\s*=\s*\.\s*\+\s*(0x[0-9A-Fa-f]+|\d+)")
+LD_SIZE_COMMENT = re.compile(r"size\s*[:=]\s*(0x[0-9A-Fa-f]+|\d+)", re.I)
+LD_RANGE_COMMENT = re.compile(r"0x([0-9A-Fa-f]{6,})\s*\.\.\s*0x([0-9A-Fa-f]{6,})")
 SECTION_NAME_OK = re.compile(r"^\.(data|bss|rodata|text)\b")
 
 HAL_DELAY = re.compile(r"\bHAL_Delay\s*\(")
@@ -250,12 +275,27 @@ def is_glue(rel: str) -> bool:
     return bool(GLUE_NAME.match(rel.rsplit("/", 1)[-1]))
 
 
+def resolve_layer(rel: str, rules) -> str:
+    layer = match_role(rel, rules) if rules else ""
+    if not layer:
+        layer = dir_role(rel)
+    if not layer and is_glue(rel):
+        layer = "glue"
+    return layer
+
+
 def iter_c_files(root: str):
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
         for fn in filenames:
             if fn.endswith((".c", ".h")):
                 yield os.path.join(dirpath, fn)
+
+
+def read_source(path: str):
+    with open(path, encoding="utf-8", errors="ignore") as fh:
+        raw = fh.read()
+    return raw, mask_comments(raw), raw.splitlines()
 
 
 # ---------------------------------------------------------------- 结构分析
@@ -398,41 +438,144 @@ def check_glue_length(raw: str, masked: str, limit: int):
     return []
 
 
+# ---------------------------------------------------------------- 跨文件索引
+
+
+def layer_depth(layer: str) -> int:
+    return 4 if layer == "glue" else LAYER_DEPTH.get(layer, -1)
+
+
+def build_function_index(root: str, rules):
+    """函数名 → 定义它的层集合。用于发现"下层声明/调用上层函数"的反向依赖。"""
+    index = {}
+    for path in iter_c_files(root):
+        rel = os.path.relpath(path, root).replace("\\", "/")
+        layer = resolve_layer(rel, rules)
+        if layer not in LAYER_DEPTH and layer != "glue":
+            continue
+        _, masked, _ = read_source(path)
+        for name, _, _, _ in iter_functions(masked):
+            index.setdefault(name, set()).add(layer)
+    return index
+
+
+def scan_defines(masked: str):
+    """返回 [(起始行号, 宏名, 展开文本)]，处理反斜杠续行。"""
+    out = []
+    lines = masked.splitlines()
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        if line.lstrip().startswith("#"):
+            start = i
+            buf = line.rstrip()
+            while buf.endswith("\\") and i + 1 < len(lines):
+                i += 1
+                buf = buf[:-1] + " " + lines[i].rstrip()
+            m = DEFINE_LINE.match(buf)
+            if m:
+                out.append((start + 1, m.group(1), buf[m.end():]))
+        i += 1
+    return out
+
+
+def macro_reaches_hardware(expansion: str) -> bool:
+    return bool(
+        HAL_CALL.search(expansion)
+        or LL_CALL.search(expansion)
+        or SPL_CALL.search(expansion)
+        or RTOS_CALL.search(expansion)
+        or REG_ACCESS.search(expansion)
+        or MMIO_CAST.search(expansion)
+        or re.search(r"\bbsp_[a-z][a-z0-9_]*\s*\(", expansion)
+    )
+
+
+def build_macro_index(root: str, rules):
+    """宏名 → (定义层, 文件)。展开后碰硬件/BSP 的宏，被上层使用即视为越层。"""
+    index = {}
+    for path in iter_c_files(root):
+        rel = os.path.relpath(path, root).replace("\\", "/")
+        layer = resolve_layer(rel, rules)
+        if not layer:
+            continue
+        _, masked, _ = read_source(path)
+        for _, name, expansion in scan_defines(masked):
+            if macro_reaches_hardware(expansion):
+                index.setdefault(name, (layer, rel))
+    return index
+
+
 # ---------------------------------------------------------------- 链接脚本
 
 
+def _section_body(text: str, open_brace: int) -> str:
+    depth = 0
+    i = open_brace
+    while i < len(text):
+        if text[i] == "{":
+            depth += 1
+        elif text[i] == "}":
+            depth -= 1
+            if depth == 0:
+                return text[open_brace + 1:i]
+        i += 1
+    return text[open_brace + 1:]
+
+
+def _declared_size(body: str):
+    m = LD_SIZE_DIRECTIVE.search(body)
+    if m:
+        return int(m.group(1), 0)
+    m = LD_SIZE_COMMENT.search(body)
+    if m:
+        return int(m.group(1), 0)
+    m = LD_RANGE_COMMENT.search(body)
+    if m:
+        lo, hi = int(m.group(1), 16), int(m.group(2), 16)
+        if hi >= lo:
+            return hi - lo + 1
+    return None
+
+
 def collect_linker(root: str):
-    sections = []  # (rel, name, addr, addr_int, line, noload)
-    wildcards = []
+    """返回 [(rel, name, addr_text, addr_int, line, noload, size, wildcards)]。"""
+    sections = []
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
         for fn in filenames:
             if not fn.endswith(".ld"):
                 continue
             path = os.path.join(dirpath, fn)
+            rel = os.path.relpath(path, root).replace("\\", "/")
             with open(path, encoding="utf-8", errors="ignore") as fh:
                 text = fh.read()
-            rel = os.path.relpath(path, root).replace("\\", "/")
-            wildcards.extend(LD_WILDCARD.findall(text))
             for m in LD_SECTION.finditer(text):
+                body = _section_body(text, m.end() - 1)
+                wildcards = [w for w in LD_WILDCARD.findall(body) if "*" in w or "?" in w]
                 line = text.count("\n", 0, m.start()) + 1
-                sections.append((rel, m.group(1), m.group(2), int(m.group(2), 16), line,
-                                 bool(m.group(3))))
-    return sections, wildcards
+                sections.append((
+                    rel, m.group(1), m.group(2), int(m.group(2), 16), line,
+                    bool(m.group(3)), _declared_size(body), wildcards,
+                ))
+    return sections
 
 
 def check_linker(root: str, c_sections, errors, warns):
-    sections, wildcards = collect_linker(root)
+    sections = collect_linker(root)
     if not sections:
         return
 
     defined = {}
     by_addr = {}
-    for rel, name, addr, value, line, noload in sections:
+    for rel, name, addr, value, line, noload, size, wildcards in sections:
         defined.setdefault(name, []).append((rel, addr, line, noload))
         by_addr.setdefault(value, []).append((rel, name, addr, line))
         if value % 4 != 0:
             errors.append((rel, line, f"固定地址段 {name} 未 4 字节对齐：{addr}"))
+        if wildcards:
+            pats = "、".join(f"*({w})" for w in wildcards)
+            errors.append((rel, line, f"固定地址段 {name} 使用通配符 {pats}；必须写成 *({name})，避免吞并后续段"))
 
     for value, group in by_addr.items():
         if len(group) > 1:
@@ -440,14 +583,26 @@ def check_linker(root: str, c_sections, errors, warns):
             rel, name, addr, line = group[1]
             errors.append((rel, line, f"固定地址段冲突：{detail} 都放在 {addr}"))
 
+    # 区间重叠：只有声明了长度（/* size: 0xNN */ 或 . = . + 0xNN）才判定
+    sized = [(name, value, value + size - 1, rel, line)
+             for rel, name, _, value, line, _, size, _ in sections if size]
+    for i, (name_a, lo_a, hi_a, rel_a, line_a) in enumerate(sized):
+        for name_b, lo_b, hi_b, rel_b, line_b in sized[i + 1:]:
+            if lo_a == lo_b:
+                continue
+            if max(lo_a, lo_b) <= min(hi_a, hi_b):
+                errors.append((
+                    rel_b, line_b,
+                    f"固定地址段区间重叠：{name_a} [0x{lo_a:08X}-0x{hi_a:08X}] 与 "
+                    f"{name_b} [0x{lo_b:08X}-0x{hi_b:08X}]",
+                ))
+
     for rel, name, line in c_sections:
         if name in defined:
             if not any(noload for _, _, _, noload in defined[name]):
                 warns.append((rel, line, f"固定地址段 {name} 未标 (NOLOAD)，启动时可能被清零"))
             continue
         if SECTION_NAME_OK.match(name):
-            continue
-        if any(fnmatch.fnmatchcase(name, pat) for pat in wildcards):
             continue
         errors.append((rel, line,
                        f"固定地址段 {name} 未在链接脚本定义（会被通配吞掉或落到默认段）"))
@@ -463,6 +618,8 @@ def main():
     parser.add_argument("--glue-max-lines", type=int, default=200, help="入口胶水文件代码行上限")
     parser.add_argument("--max-per-file", type=int, default=5, help="未分层文件每文件最多提示条数")
     parser.add_argument("--no-linker", action="store_true", help="跳过链接脚本检查")
+    parser.add_argument("--allow-unlayered", action="store_true",
+                        help="允许工程完全没有分层目录/角色清单（默认判为 ERROR，避免绿灯空转）")
     args = parser.parse_args()
 
     root = os.path.abspath(args.root)
@@ -472,29 +629,74 @@ def main():
 
     rules = load_roles(root, args.roles)
     header_index = build_header_index(root, rules)
+    func_index = build_function_index(root, rules)
+    unsafe_macros = build_macro_index(root, rules)
 
     errors, warns = [], []
     unlayered_hits = 0
     unlayered_files = 0
+    unlayered_total = 0
+    layered_files = 0
+    rules_matched = 0
+    main_files = []
     c_sections = []
 
     for path in sorted(iter_c_files(root)):
         rel = os.path.relpath(path, root).replace("\\", "/")
-        layer = match_role(rel, rules) if rules else ""
-        if not layer:
-            layer = dir_role(rel)
-        if not layer and is_glue(rel):
-            layer = "glue"
+        layer = resolve_layer(rel, rules)
 
-        with open(path, encoding="utf-8", errors="ignore") as fh:
-            raw = fh.read()
-        masked = mask_comments(raw)
-        raw_lines = raw.splitlines()
+        if layer:
+            layered_files += 1
+            if rules and match_role(rel, rules):
+                rules_matched += 1
+            if os.path.basename(rel) == "main.c":
+                main_files.append(rel)
+        else:
+            unlayered_total += 1
+
+        raw, masked, raw_lines = read_source(path)
 
         for m in SECTION_ATTR.finditer(raw):
             c_sections.append((rel, m.group(1), raw.count("\n", 0, m.start()) + 1))
 
         local_hits = 0
+
+        if layer in UPPER_LAYERS:
+            for def_line, name, expansion in scan_defines(masked):
+                if macro_reaches_hardware(expansion):
+                    errors.append((rel, def_line, f"宏间接越层：{name} 展开到下层调用/寄存器"))
+
+        if layer in LAYER_DEPTH:
+            reported = set()
+            for m in EXTERN_FUNC.finditer(masked):
+                name = m.group(1)
+                defs = func_index.get(name)
+                if not defs or len(defs) != 1 or name in reported:
+                    continue
+                only = next(iter(defs))
+                if layer_depth(only) > layer_depth(layer):
+                    line_no = masked.count("\n", 0, m.start()) + 1
+                    errors.append((rel, line_no,
+                                   f"反向依赖：{layer}/ 声明上层函数 {name}（定义在 {only}/）"))
+                    reported.add(name)
+
+            for no, line in enumerate(masked.splitlines(), 1):
+                raw_line = raw_lines[no - 1] if no <= len(raw_lines) else ""
+                if "arch-allow" in raw_line or line.lstrip().startswith("#"):
+                    continue
+                for m in CALL_NAME.finditer(line):
+                    name = m.group(1)
+                    if name in reported:
+                        continue
+                    defs = func_index.get(name)
+                    if not defs or len(defs) != 1:
+                        continue
+                    only = next(iter(defs))
+                    if layer_depth(only) > layer_depth(layer):
+                        errors.append((rel, no,
+                                       f"反向依赖：{layer}/ 调用上层函数 {name}（定义在 {only}/）"))
+                        reported.add(name)
+
         for no, line in enumerate(masked.splitlines(), 1):
             raw_line = raw_lines[no - 1] if no <= len(raw_lines) else ""
             if "arch-allow" in raw_line:
@@ -514,7 +716,7 @@ def main():
                         if m:
                             hits.append(f"{label}：{m.group(0)}")
                             break
-                    if REG_ACCESS.search(code):
+                    if REG_ACCESS.search(code) or MMIO_CAST.search(code):
                         hits.append("寄存器访问")
                     if hits and local_hits < args.max_per_file:
                         warns.append((rel, no, "未分层文件 " + "；".join(hits)))
@@ -538,15 +740,22 @@ def main():
                     m = pat.search(code)
                     if m:
                         errors.append((rel, no, f"{label}：{m.group(0)}"))
-                if REG_ACCESS.search(code):
+                if REG_ACCESS.search(code) or MMIO_CAST.search(code):
                     errors.append((rel, no, "越层访问寄存器"))
+
+                for name, (mlayer, mrel) in unsafe_macros.items():
+                    if layer_depth(mlayer) >= layer_depth(layer):
+                        continue
+                    if re.search(r"\b" + re.escape(name) + r"\b", code):
+                        errors.append((rel, no,
+                                       f"宏间接越层：{name}（定义在 {mlayer} 层 {mrel}）"))
 
             if layer == "app":
                 for m in BSP_PREFIX_CALL.finditer(code):
                     name = m.group(0).rstrip("(").strip()
                     if name.startswith("bsp_"):
                         errors.append((rel, no, f"APP 直调 BSP：{name}（应经组件层）"))
-                    elif not name.startswith(APP_OSAL_ALLOWED):
+                    elif name not in APP_OSAL_ALLOWED:
                         errors.append((rel, no, f"APP 越权调用 OSAL：{name}（仅允许时间原语）"))
 
             if layer in UPPER_LAYERS:
@@ -555,7 +764,7 @@ def main():
                 elif SOFT_DELAY.search(code):
                     warns.append((rel, no, "app/组件层出现阻塞延时（确认是否应改为非阻塞时基）"))
 
-            if layer in NON_BSP_LAYERS and path.endswith(".h"):
+            if layer in NON_BSP_LAYERS:
                 m = VENDOR_TYPE.search(code)
                 if m:
                     errors.append((rel, no, f"厂商类型泄漏：{m.group(1)}"))
@@ -575,8 +784,9 @@ def main():
         if layer == "glue":
             errors.extend((rel, no, msg) for no, msg in check_glue_length(raw, masked, args.glue_max_lines))
         else:
-            if path.endswith(".c") and layer in NON_BSP_LAYERS:
-                errors.extend((rel, no, msg) for no, msg in find_global_vars(masked, raw_lines))
+            if layer in NON_BSP_LAYERS:
+                if path.endswith(".c"):
+                    errors.extend((rel, no, msg) for no, msg in find_global_vars(masked, raw_lines))
                 errors.extend((rel, no, msg) for no, msg in find_extern_vars(masked, raw_lines))
             if layer != "bsp":
                 errors.extend((rel, no, msg) for no, msg in check_nesting(masked))
@@ -586,6 +796,19 @@ def main():
                 raw_line = raw_lines[no - 1] if no <= len(raw_lines) else ""
                 if "arch-allow" not in raw_line:
                     errors.append((rel, no, msg))
+
+    if len(main_files) > 1:
+        for rel in main_files[1:]:
+            errors.append((rel, 1, f"存在多个 main.c（{', '.join(main_files)}）；入口只允许一个"))
+
+    if not args.allow_unlayered:
+        if layered_files == 0:
+            errors.append(("(工程)", 1,
+                           "未发现任何分层目录或角色清单：检查器没有执行分层约束。"
+                           "请加 .arch-roles，或确需只统计未分层文件时加 --allow-unlayered"))
+        elif rules and rules_matched == 0:
+            errors.append((args.roles or ROLE_FILE_NAMES[0], 1,
+                           "角色清单没有匹配到任何文件：检查实际未生效，请核对模式与路径"))
 
     if not args.no_linker:
         check_linker(root, c_sections, errors, warns)
@@ -597,10 +820,10 @@ def main():
     for rel, no, msg in warns:
         print(f"[WARN ] {rel}:{no} {msg}")
 
-    if unlayered_files:
+    if unlayered_files or unlayered_total:
         print(
-            f"[NOTE ] 另有 {unlayered_files} 个未分层文件、{unlayered_hits} 处平台调用未计入分层检查；"
-            "把它们放进 app/ components/ osal/ bsp/，或用 .arch-roles 声明角色"
+            f"[NOTE ] 另有 {unlayered_total} 个未分层文件（其中 {unlayered_files} 个含平台调用、"
+            f"{unlayered_hits} 处已提示）；把它们放进 app/ components/ osal/ bsp/，或用 .arch-roles 声明角色"
         )
     if rules:
         print(f"[NOTE ] 已按角色清单 {args.roles or ROLE_FILE_NAMES[0]} 判定层归属")
@@ -616,9 +839,7 @@ def build_header_index(root: str, rules):
         if not path.endswith(".h"):
             continue
         rel = os.path.relpath(path, root).replace("\\", "/")
-        layer = match_role(rel, rules) if rules else ""
-        if not layer:
-            layer = dir_role(rel)
+        layer = resolve_layer(rel, rules)
         if not layer:
             continue
         index.setdefault(os.path.basename(path), layer)
