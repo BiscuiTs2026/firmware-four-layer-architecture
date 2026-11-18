@@ -30,12 +30,12 @@
 <工程根>/
 ├── .arch-roles               文件 → 层映射，以及 alias / layers / ignore 指令
 ├── tools/
-│   ├── check_layering.py     从上游某个 commit 原样拷入，只改文件头 source-commit 一行
+│   ├── check_layering.py     从上游某个 commit 原样拷入，改文件头注释与 SOURCE_COMMIT 常量两处
 │   └── CHECKER.lock          同步点：版本、来源仓、来源提交、本地补丁说明
 └── .github/workflows/arch.yml   CI 门槛（也可用 GitLab CI / 本地 pre-push）
 ```
 
-### 2.1 文件头与锁文件
+### 2.1 文件头、常量与锁文件
 
 拷入的文件头固定三行，其中 `source-commit` 由使用方填写：
 
@@ -43,6 +43,22 @@
 # source-repo: https://github.com/BiscuiTs2026/firmware-four-layer-architecture
 # checker-version: 3.2.0
 # source-commit: self    ← 上游仓库内为 self；拷到使用方仓库后改成上游提交哈希，并在 tools/CHECKER.lock 里登记
+```
+
+**来源提交必须改两处：文件头注释，以及文件里的 `SOURCE_COMMIT` 常量。**
+
+```python
+SOURCE_COMMIT = "self"   # 常量区，搜 SOURCE_COMMIT 即可定位；--version 与 --lock 读的是这个常量
+```
+
+Python 不会解析注释，所以只改头注释对行为没有任何影响：`--version` 仍打印常量里的 `self`，
+`--lock` 会拿 `self` 去和锁文件里的哈希比，报
+`[LOCK] source-commit 不一致：锁文件 3f1c9a2…，本文件 self`，
+而错误信息里的“本文件”就是那个没改的常量——很容易被误判成锁文件写错，反复改锁文件也不会有用。
+正确顺序是：先改常量，再改头注释（保持一致），最后写锁文件；然后用下面这条命令自检：
+
+```bash
+python3 tools/check_layering.py --version | grep source-commit   # 必须是上游提交哈希，不能是 self
 ```
 
 `tools/CHECKER.lock`（唯一同步点）：
@@ -81,7 +97,8 @@ jobs:
 
 两条命令的退出码就是门槛：
 
-- `--version --lock`：文件头与锁文件任一不一致返回 `1`（升级漏改、手工改过文件都会被抓到）；
+- `--version --lock`：`SOURCE_COMMIT` 常量与锁文件任一不一致返回 `1`（升级漏改、手工改过文件都会被抓到）；
+  文件头注释只是给人看的，不参与校验——见 2.1 的“改两处”；
 - 正常扫描：有 ERROR 返回 `1`，用法错误返回 `2`。
 
 `--version` 单独使用时只打印：
@@ -191,7 +208,8 @@ third_party/      厂商包，ignore 掉
 ### 4.2 使用方升级步骤
 
 1. 读上游提交说明，确认改的是自己会碰到的规则；
-2. 覆盖 `tools/check_layering.py`，把文件头 `source-commit` 改成上游提交哈希；
+2. 覆盖 `tools/check_layering.py`，改两处：`SOURCE_COMMIT` 常量与文件头 `source-commit` 注释，
+   都改成上游提交哈希（只改注释，`--lock` 会按常量报漂移）；
 3. 更新 `tools/CHECKER.lock`（版本、提交、`synced-at`），`local-patches` 保持与事实一致；
 4. 本地跑一遍 `python3 tools/check_layering.py .`，对新增发现逐条判定：真问题进 backlog，
    误报按第 4 节回灌，不要把新版本直接塞进 CI 让流水线红着；
