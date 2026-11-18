@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -103,6 +104,51 @@ def run_unlayered_guard():
     return ok
 
 
+def run_version_lock():
+    """--version 的输出必须等于文件里声明的版本，锁文件一致返回 0、不一致返回 1。"""
+    with open(CHECKER, encoding="utf-8") as fh:
+        source = fh.read()
+    match = re.search(r'^CHECKER_VERSION\s*=\s*"([^"]+)"', source, re.MULTILINE)
+    declared = match.group(1) if match else None
+    proc = subprocess.run(
+        [sys.executable, CHECKER, "--version"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    version = None
+    for line in proc.stdout.splitlines():
+        if line.startswith("checker-version:"):
+            version = line.split(":", 1)[1].strip()
+    if not declared or version != declared:
+        print(f"[FAIL] --version 输出 {version!r} 与文件声明 {declared!r} 不一致")
+        return False
+    with tempfile.TemporaryDirectory() as tmp:
+        good = os.path.join(tmp, "good.lock")
+        bad = os.path.join(tmp, "bad.lock")
+        body = (
+            "checker-version = {v}\n"
+            "source-repo = https://github.com/BiscuiTs2026/firmware-four-layer-architecture\n"
+            "source-commit = self\n"
+            "synced-at = 2026-11-18\n"
+            "local-patches = none\n"
+        )
+        with open(good, "w", encoding="utf-8-sig") as fh:  # 带 BOM，模拟 Windows 编辑器
+            fh.write(body.format(v=version))
+        with open(bad, "w", encoding="utf-8") as fh:
+            fh.write(body.format(v="0.0.1"))
+        ok_proc = subprocess.run([sys.executable, CHECKER, "--version", "--lock", good],
+                                 capture_output=True, text=True)
+        bad_proc = subprocess.run([sys.executable, CHECKER, "--version", "--lock", bad],
+                                  capture_output=True, text=True)
+    ok = ok_proc.returncode == 0 and bad_proc.returncode == 1
+    status = "PASS" if ok else "FAIL"
+    print(f"[{status}] --version={version} 与声明一致；锁文件：一致 {ok_proc.returncode}"
+          f"（期望 0），不一致 {bad_proc.returncode}（期望 1）")
+    return ok
+
+
 def main():
     ok = True
     for rel_root, expected_path in CASES:
@@ -110,6 +156,7 @@ def main():
     for rel_root in CLEAN:
         ok = run_clean(rel_root) and ok
     ok = run_unlayered_guard() and ok
+    ok = run_version_lock() and ok
     return 0 if ok else 1
 
 

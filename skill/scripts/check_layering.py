@@ -1,14 +1,23 @@
 #!/usr/bin/env python3
+# source-repo: https://github.com/BiscuiTs2026/firmware-four-layer-architecture
+# checker-version: 3.2.0
+# source-commit: self    ← 上游仓库内为 self；拷到使用方仓库后改成上游提交哈希，并在 tools/CHECKER.lock 里登记
 """check_layering.py — 四层架构启发式静态检查（v3）。
 
 用法：
     python3 check_layering.py <工程根目录> [选项]
+    python3 check_layering.py --version [--lock tools/CHECKER.lock]
 
 选项：
     --roles PATH        角色清单文件，默认在工程根目录找 .arch-roles / arch-roles.txt
     --glue-max-lines N  入口胶水文件行数上限，默认 200
     --max-per-file N    未分层文件每文件最多提示条数，默认 5
     --no-linker         跳过链接脚本固定地址段检查
+    --version           打印版本与来源，供单文件拷出使用时核对
+    --lock PATH         与使用方的锁文件比对版本/来源提交，不一致退出 1
+
+本文件可单独拷到其它工程（tools/check_layering.py）使用：只依赖 Python 3.8+ 标准库，
+不读本仓库任何其它文件，不需要安装，也不需要整仓检出。
 
 两类工程形态都能扫：
     目录模式：路径里含 bsp/ osal/ components/ app/ 即按目录判层，无需任何配置。
@@ -60,6 +69,10 @@ import fnmatch
 import os
 import re
 import sys
+
+CHECKER_VERSION = "3.2.0"
+SOURCE_REPO = "https://github.com/BiscuiTs2026/firmware-four-layer-architecture"
+SOURCE_COMMIT = "self"  # 上游仓库内保持 self；使用方拷贝后改为上游提交哈希
 
 ROLES = ("bsp", "osal", "components", "app", "glue", "common")
 LAYER_DEPTH = {"common": -1, "bsp": 0, "osal": 1, "components": 2, "app": 3}
@@ -639,16 +652,61 @@ def check_linker(root: str, c_sections, errors, warns):
 # ---------------------------------------------------------------- 主流程
 
 
+def print_version(lock_path=None):
+    """打印自身版本与来源；给了锁文件就与其比对，不一致返回 False。"""
+    print(f"checker-version: {CHECKER_VERSION}")
+    print(f"source-repo: {SOURCE_REPO}")
+    print(f"source-commit: {SOURCE_COMMIT}")
+    if not lock_path:
+        return True
+    if not os.path.isfile(lock_path):
+        print(f"锁文件不存在：{lock_path}", file=sys.stderr)
+        return False
+    locked = {}
+    # Windows 编辑器常写出带 BOM 的锁文件
+    with open(lock_path, encoding="utf-8-sig", errors="ignore") as fh:
+        for line in fh:
+            raw = line.split("#", 1)[0].strip()
+            if "=" not in raw:
+                continue
+            key, value = raw.split("=", 1)
+            locked[key.strip().lower()] = value.strip()
+    problems = []
+    for key, mine in (("checker-version", CHECKER_VERSION),
+                      ("source-commit", SOURCE_COMMIT),
+                      ("source-repo", SOURCE_REPO)):
+        other = locked.get(key)
+        if other is None:
+            problems.append(f"锁文件缺少 {key}")
+        elif other != mine:
+            problems.append(f"{key} 不一致：锁文件 {other}，本文件 {mine}")
+    if problems:
+        for item in problems:
+            print(f"[LOCK] {item}", file=sys.stderr)
+        return False
+    print(f"[LOCK] 与 {lock_path} 一致")
+    return True
+
+
 def main():
     parser = argparse.ArgumentParser(description="四层架构启发式静态检查")
-    parser.add_argument("root", help="工程根目录")
+    parser.add_argument("root", nargs="?", help="工程根目录")
     parser.add_argument("--roles", default=None, help="角色清单文件路径")
     parser.add_argument("--glue-max-lines", type=int, default=200, help="入口胶水文件代码行上限")
     parser.add_argument("--max-per-file", type=int, default=5, help="未分层文件每文件最多提示条数")
     parser.add_argument("--no-linker", action="store_true", help="跳过链接脚本检查")
     parser.add_argument("--allow-unlayered", action="store_true",
                         help="允许工程完全没有分层目录/角色清单（默认判为 ERROR，避免绿灯空转）")
+    parser.add_argument("--version", action="store_true", help="打印版本与来源，可与 --lock 合用")
+    parser.add_argument("--lock", default=None, help="使用方的锁文件路径，比对版本与来源提交")
     args = parser.parse_args()
+
+    if args.version:
+        return 0 if print_version(args.lock) else 1
+    if args.lock:
+        parser.error("--lock 需与 --version 一起使用")
+    if not args.root:
+        parser.error("缺少工程根目录")
 
     root = os.path.abspath(args.root)
     if not os.path.isdir(root):

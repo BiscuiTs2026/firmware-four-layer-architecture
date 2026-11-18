@@ -16,8 +16,13 @@ python3 skill/scripts/check_layering.py <工程根目录> [选项]
 | `--max-per-file N` | 5 | 未分层文件每文件最多提示条数 |
 | `--no-linker` | 关 | 跳过链接脚本固定地址段检查 |
 | `--allow-unlayered` | 关 | 允许工程完全没有分层信息（默认判 ERROR） |
+| `--version` | 关 | 打印版本与来源仓、来源提交，不需要工程根目录 |
+| `--lock PATH` | 关 | 与使用方锁文件比对版本/来源，不一致退出 1；需配合 `--version` |
 
 退出码：`0` 无 ERROR，`1` 存在 ERROR，`2` 用法或路径错误。
+
+`--version` 输出的 `checker-version` 必须与文件里的 `CHECKER_VERSION` 常量一致，
+`tests/run_tests.py` 里有一条回归专门检查这一点以及锁文件的一致/不一致两种退出码。
 
 **没有任何分层信息时默认返回 1。** 这是为了避免“全工程未分层 → 0 ERROR → 绿灯空转”；
 确实只想统计未分层文件时，显式加 `--allow-unlayered`。
