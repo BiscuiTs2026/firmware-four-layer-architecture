@@ -11,12 +11,14 @@ SECTIONS
   /* 蓝牙链路统计块：0x20003000 .. 0x20003037（56 字节） */
   .fixed_ram 0x20003000 (NOLOAD) :
   {
+    /* size: 0x38 */
     KEEP(*(.fixed_ram))
   } > RAM
 
   /* 遥测快照：0x20003900 .. 0x2000390F（16 字节），与上一段不重叠 */
   .telem_ram 0x20003900 (NOLOAD) :
   {
+    /* size: 0x10 */
     KEEP(*(.telem_ram))
   } > RAM
 }

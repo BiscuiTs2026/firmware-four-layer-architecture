@@ -2,7 +2,16 @@
 #include "osal_tick.h"
 
 /* 快照块：带段属性，写只允许在本文件内发生 */
-volatile telemetry_snap_t g_telemetry __attribute__((section(".telem_ram"), used));
+#if defined(__GNUC__)
+#define TELEM_SECTION __attribute__((section(".telem_ram"), used))
+#elif defined(_MSC_VER)
+#pragma section(".telem_ram", read, write)
+#define TELEM_SECTION __declspec(allocate(".telem_ram"))
+#else
+#define TELEM_SECTION
+#endif
+
+TELEM_SECTION volatile telemetry_snap_t g_telemetry;
 
 static uint32_t s_next_sample_ms;
 

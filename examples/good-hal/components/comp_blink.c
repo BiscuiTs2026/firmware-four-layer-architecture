@@ -20,17 +20,18 @@ err_t comp_blink_init(uint32_t half_period_ms)
   return bsp_led_write(LED_ID_STATUS, s_level);
 }
 
-void comp_blink_task(void)
+err_t comp_blink_task(void)
 {
   uint32_t now = osal_tick_ms();
 
   if ((now - s_last_toggle_ms) < s_half_period_ms)
   {
-    return;
+    return ERR_OK;
   }
 
   /* 用累加而不是 now，避免长阻塞后相位漂移 */
   s_last_toggle_ms += s_half_period_ms;
   s_level = (uint8_t)(s_level == 0U);
-  (void)bsp_led_write(LED_ID_STATUS, s_level);
+  /* 错误码原样向上传，由调用方决定故障出口，不在这里吞掉 */
+  return bsp_led_write(LED_ID_STATUS, s_level);
 }
