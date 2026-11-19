@@ -41,7 +41,7 @@
 
 ```python
 # source-repo: https://github.com/BiscuiTs2026/firmware-four-layer-architecture
-# checker-version: 3.2.0
+# checker-version: 3.3.0
 # source-commit: self    ← 上游仓库内为 self；拷到使用方仓库后改成上游提交哈希，并在 tools/CHECKER.lock 里登记
 ```
 
@@ -65,7 +65,7 @@ python3 tools/check_layering.py --version | grep source-commit   # 必须是上�
 
 ```
 # 上游检查器锁文件：改这里等于声明"我升到了某个版本"
-checker-version = 3.2.0
+checker-version = 3.3.0
 source-repo     = https://github.com/BiscuiTs2026/firmware-four-layer-architecture
 source-commit   = 3f1c9a2b7d8e4c5f0a1b2c3d4e5f60718293a4b5
 synced-at       = 2026-11-18
@@ -104,10 +104,30 @@ jobs:
 `--version` 单独使用时只打印：
 
 ```
-checker-version: 3.2.0
+checker-version: 3.3.0
 source-repo: https://github.com/BiscuiTs2026/firmware-four-layer-architecture
 source-commit: self
 ```
+
+### 2.3 胶水层语义规则（v3.3 起）
+
+v3.2 及以前，胶水层只有行数闸门。真实工程会把上限一路抬高（1280 → 1500 → 1700），
+行数守住也不代表质量守住。v3.3 增加四条语义规则，默认全部 WARN：
+
+| 规则 | 选项 | 默认 | 判据摘要 |
+|---|---|---|---|
+| 忙等/阻塞延时 | `--glue-wait` | `warn` | 空体循环等待寄存器/标志；`HAL_Delay`、`*delay_ms` 等调用 |
+| 硬编码引脚/端口 | `--glue-pin` | `warn` | `GPIO_PIN_x`、作为实参的 `GPIOx`、裸 `0x400xxxxx` |
+| 单函数过长 | `--glue-max-func-lines` | 80 | 函数体内代码行数；`0` 关闭 |
+| 字符串 `else if` 命令链 | `--glue-dispatch` / `--glue-dispatch-chain` | `warn` / 4 | 同一函数内比较字符串字面量的 `else if` 分支数 |
+
+升级到 3.3.0 时按下面顺序处理：
+
+1. 先用默认 WARN 跑一遍，逐条判定真问题与误报；误报按第 4 节回灌，不要本地改规则。
+2. CubeMX / CubeIDE 生成的文件（`main.c`、`*_it.c`）先用 `ignore` 挡掉。
+   第 19 项分不清生成行与手写行，生成工程里的 `GPIO_PIN_x` 会命中。
+3. 存量清零后，再按 4.1 的三条门槛决定是否在 CI 里写成 `--glue-wait error` 之类。
+   第 18–21 项默认 WARN，属于“未达 gate 门槛”的建议级规则。
 
 ---
 
@@ -158,7 +178,7 @@ third_party/      厂商包，ignore 掉
 | `hal` 调 `app`（调用 / 本地 `extern` / include） | ERROR | 反向依赖，与四层同一口径 |
 | `app` 里出现寄存器、`HAL_`、LL、厂商类型 | ERROR | 分层的最小含义，与层数无关 |
 | `hal` 头文件把 `GPIO_TypeDef` 暴露给上层 | ERROR | 厂商类型不得出 BSP |
-| `main.c` | 仍按 `glue`：可碰寄存器与 HAL，≤ 200 行，不承载业务 | 入口胶水层与层数无关 |
+| `main.c` | 仍按 `glue`：可碰寄存器与 HAL，≤ 200 行，不承载业务；并受第 18–21 项语义约束（忙等/延时、硬编码引脚、单函数 ≤ 80 行、长字符串 `else if` 链） | 入口胶水层与层数无关 |
 | 某个文件解析出的层不在 `layers` 里 | ERROR | 清单与代码脱节，不能靠声明把第三层藏起来 |
 | 只有 `app/` 一个目录、代码直接写寄存器 | 不是两层，是没分层：这些文件按 `app` 判定，会报越层 | 层数少不等于可以不分层 |
 | 厂商目录没有 `ignore`，直接映射成 `bsp` | 能跑，但每次都要解析整套厂商包（实测慢约 100 倍） | 见第 5 节实测 |
@@ -191,7 +211,7 @@ third_party/      厂商包，ignore 掉
    但要在 `docs/checker.md` 写清放宽理由。
 4. **回归全绿**（上游）：`python3 tests/run_tests.py` 全部 PASS，包括示例工程的零发现项与“单文件拷出运行”项。
 5. **发版并通知**（上游）：`CHECKER_VERSION` 递增，提交信息写清哪条规则变了、影响哪些工程；
-   使用方按 4.2 升级。
+   使用方按 4.3 升级。
 
 ### 4.1 新规则进 CI gate 的三条门槛
 
@@ -205,7 +225,25 @@ third_party/      厂商包，ignore 掉
 
 不满足三条的规则只能以 WARN 或文档建议的形式存在，且必须在 `docs/checker.md` 标注为“未达 gate 门槛”。
 
-### 4.2 使用方升级步骤
+### 4.2 把一条规则升成 ERROR 的前置条件
+
+WARN 转 ERROR 是“这个仓从现在起不接受这类写法”，不是“跑了一次没红”。五条全部满足才允许在 CI 里写
+`--glue-wait error` 之类的参数：
+
+1. **存量清零**：在该仓**当前 CI 配置**（含 `.arch-roles` 的 `ignore`）下，该规则命中数为 0；
+   扫描命令与完整输出附在提交说明里，不能只写“已清零”。
+2. **连续两轮无新增**：最近两次提交（或两个完整工作日）的扫描结果一致，排除“这次刚好没扫到”的偶然。
+3. **生成文件已 ignore**：CubeMX / CubeIDE 生成文件与第三方目录已在 `ignore` 里；
+   自检方法是临时去掉 `ignore` 再跑一次，确认多出来的命中只来自生成文件与厂商包。
+4. **不得用豁免稀释**：升 ERROR 的同时不得新增 `arch-allow` 把命中改成豁免；已有豁免逐条写明理由与归属文件。
+   升完之后该仓的 `arch-allow` 数量只减不增，否则等于把闸门拆了再挂个牌子。
+5. **一条规则一个提交**：不同规则不合并升级；升 ERROR 的提交同时改 CI 命令，并回写 `CHECKER.lock` 的 `synced-at`。
+
+回滚条件：升 ERROR 后出现新误报，先降回 WARN、按第 4 节回灌上游；**不许在 CI 里加 `arch-allow` 绕过**。
+存量未清零的仓（例如仍有一批胶水层命中的板级工程）保持 WARN，等清零后再升；该规则在它那里仍然是可见信号，
+只是不阻断合并。
+
+### 4.3 使用方升级步骤
 
 1. 读上游提交说明，确认改的是自己会碰到的规则；
 2. 覆盖 `tools/check_layering.py`，改两处：`SOURCE_COMMIT` 常量与文件头 `source-commit` 注释，

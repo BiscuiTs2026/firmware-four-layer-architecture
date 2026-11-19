@@ -1,0 +1,1 @@
+[WARN ] main.c:8 胶水层函数 dispatch 有 4 个字符串 else-if 分支（阈值 4）；命令分发应改注册表

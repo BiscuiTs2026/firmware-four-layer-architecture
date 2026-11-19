@@ -27,10 +27,17 @@ CASES = [
     ("tests/probe-hook-call", os.path.join(ROOT, "tests", "probe-hook-call", "expected.txt")),
     ("tests/probe-two-layer", os.path.join(ROOT, "tests", "probe-two-layer", "expected.txt")),
     ("tests/probe-layers-drift", os.path.join(ROOT, "tests", "probe-layers-drift", "expected.txt")),
+    # v3.3 胶水层语义规则：正例
+    ("tests/probe-glue-wait", os.path.join(ROOT, "tests", "probe-glue-wait", "expected.txt")),
+    ("tests/probe-glue-pin", os.path.join(ROOT, "tests", "probe-glue-pin", "expected.txt")),
+    ("tests/probe-glue-func", os.path.join(ROOT, "tests", "probe-glue-func", "expected.txt"),
+     ["--glue-max-func-lines", "20"]),
+    ("tests/probe-glue-dispatch", os.path.join(ROOT, "tests", "probe-glue-dispatch", "expected.txt")),
 ]
 
 # 示例工程必须零 ERROR、零 WARN
-CLEAN = ["examples/good-hal", "examples/good-baremetal", "examples/flat", "examples/two-layer"]
+CLEAN = ["examples/good-hal", "examples/good-baremetal", "examples/flat", "examples/two-layer",
+         "tests/probe-glue-clean", "tests/probe-glue-func"]
 
 
 def load_expected(path):
@@ -43,10 +50,10 @@ def load_expected(path):
     return expected
 
 
-def run_case(rel_root, expected_path):
+def run_case(rel_root, expected_path, extra_args=None):
     target = os.path.join(ROOT, rel_root)
     proc = subprocess.run(
-        [sys.executable, CHECKER, target],
+        [sys.executable, CHECKER, target] + list(extra_args or []),
         capture_output=True,
         text=True,
         encoding="utf-8",
@@ -87,6 +94,31 @@ def run_clean(rel_root):
     for item in findings:
         print(f"       {item}")
     return not findings and proc.returncode == 0
+
+
+def run_glue_switches():
+    """胶水层语义规则必须可关：相应开关置 off/0 后不得再有发现。"""
+    checks = [
+        ("tests/probe-glue-wait", ["--glue-wait", "off", "--glue-pin", "off"]),
+        ("tests/probe-glue-pin", ["--glue-wait", "off", "--glue-pin", "off"]),
+        ("tests/probe-glue-dispatch", ["--glue-dispatch", "off"]),
+        ("tests/probe-glue-func", ["--glue-max-func-lines", "0"]),
+    ]
+    ok = True
+    for rel_root, flags in checks:
+        proc = subprocess.run(
+            [sys.executable, CHECKER, os.path.join(ROOT, rel_root)] + flags,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        findings = [line for line in proc.stdout.splitlines() if line.startswith(("[ERROR]", "[WARN ]"))]
+        good = proc.returncode == 0 and not findings
+        print(f"[{'PASS' if good else 'FAIL'}] 规则开关 {rel_root} {' '.join(flags)}："
+              f"{len(findings)} 条发现")
+        ok = good and ok
+    return ok
 
 
 def run_unlayered_guard():
@@ -186,10 +218,12 @@ def run_version_lock():
 
 def main():
     ok = True
-    for rel_root, expected_path in CASES:
-        ok = run_case(rel_root, expected_path) and ok
+    for case in CASES:
+        extra = case[2] if len(case) > 2 else None
+        ok = run_case(case[0], case[1], extra) and ok
     for rel_root in CLEAN:
         ok = run_clean(rel_root) and ok
+    ok = run_glue_switches() and ok
     ok = run_unlayered_guard() and ok
     ok = run_vendored_copy() and ok
     ok = run_version_lock() and ok

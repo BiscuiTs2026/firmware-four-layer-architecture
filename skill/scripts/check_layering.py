@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # source-repo: https://github.com/BiscuiTs2026/firmware-four-layer-architecture
-# checker-version: 3.2.0
+# checker-version: 3.3.0
 # source-commit: self    ← 上游仓库内为 self；拷到使用方仓库后改成上游提交哈希，并在 tools/CHECKER.lock 里登记
-"""check_layering.py — 四层架构启发式静态检查（v3.2）。
+"""check_layering.py — 四层架构启发式静态检查（v3.3）。
 
 用法：
     python3 check_layering.py <工程根目录> [选项]
@@ -11,6 +11,11 @@
 选项：
     --roles PATH        角色清单文件，默认在工程根目录找 .arch-roles / arch-roles.txt
     --glue-max-lines N  入口胶水文件行数上限，默认 200
+    --glue-wait LEVEL   胶水层忙等/阻塞延时级别：off / warn / error，默认 warn
+    --glue-pin LEVEL    胶水层硬编码引脚/端口级别：off / warn / error，默认 warn
+    --glue-max-func-lines N  胶水层单个函数代码行上限，默认 80；0 关闭
+    --glue-dispatch LEVEL    胶水层字符串 else-if 命令链级别：off / warn / error，默认 warn
+    --glue-dispatch-chain N  触发命令链提示的最少字符串 else-if 分支数，默认 4
     --max-per-file N    未分层文件每文件最多提示条数，默认 5
     --no-linker         跳过链接脚本固定地址段检查
     --version           打印版本与来源，供单文件拷出使用时核对
@@ -36,7 +41,8 @@
     bsp / osal / components / app —— 四层。
     common —— 纯类型与常量（err_t、公共枚举），任何层可包含它，它不参与依赖排序。
     glue —— 入口胶水（main.c、startup_*、*_irq.c 等），允许碰寄存器与 HAL，
-            但只允许做初始化与中断分发，行数超限即判为"业务逻辑上移失败"。
+            但只允许做初始化与中断分发。行数超限、忙等/阻塞延时、硬编码引脚、
+            单函数过长、字符串 else-if 命令链都会提示"业务逻辑上移失败"。
 
 检查项：
      1. 越层调用平台 API（app/ components/ 里出现 HAL/LL/SPL/RTOS、寄存器、SysTick/SCB、
@@ -60,6 +66,10 @@
     15. 唯一入口：出现第二个 main.c → ERROR
     16. 工程完全没有分层目录或角色清单 → ERROR（可用 --allow-unlayered 显式关闭）
     17. BSP 越权调用 OSAL → ERROR（仅允许 *critical_enter / *critical_exit / *tick_inc）
+    18. 胶水层忙等/阻塞延时（空转等待硬件或标志位、HAL_Delay 之类）→ 默认 WARN
+    19. 胶水层硬编码引脚/端口（GPIO_PIN_x、作为实参的 GPIOx、裸 0x400xxxxx）→ 默认 WARN
+    20. 胶水层单个函数代码行超过 --glue-max-func-lines（默认 80）→ WARN
+    21. 胶水层单函数内字符串 else-if 链达到 --glue-dispatch-chain（默认 4）→ WARN
 
 豁免：
     - 行尾 `// arch-allow` 跳过该行全部检查；
@@ -76,7 +86,7 @@ import os
 import re
 import sys
 
-CHECKER_VERSION = "3.2.0"
+CHECKER_VERSION = "3.3.0"
 SOURCE_REPO = "https://github.com/BiscuiTs2026/firmware-four-layer-architecture"
 SOURCE_COMMIT = "self"  # 上游仓库内保持 self；使用方拷贝后改为上游提交哈希
 
@@ -195,6 +205,25 @@ SECTION_NAME_OK = re.compile(r"^\.(data|bss|rodata|text)\b")
 
 HAL_DELAY = re.compile(r"\bHAL_Delay\s*\(")
 SOFT_DELAY = re.compile(r"\b(?:delay_ms|delay_us|mdelay|udelay|osal_sleep_ms)\s*\(")
+
+# ---- 胶水层语义检查（v3.3）：只作用于 glue 文件，级别与阈值由命令行控制 ----
+
+# 阻塞延时调用：允许工程自己的前缀（如 pm_osal_delay_ms、bsp_delay_us）
+GLUE_DELAY_CALL = re.compile(
+    r"\b(?:[A-Za-z_]\w*_)?(?:HAL_Delay|osDelay|osDelayUntil|vTaskDelay|vTaskDelayUntil"
+    r"|delay_ms|delay_us|mdelay|udelay)\s*\("
+)
+# 引脚/端口硬编码：HAL 引脚常量、作为实参传入的 GPIOx、裸 APB2 GPIO 基址
+GLUE_PIN_CONST = re.compile(r"\bGPIO_PIN_\d+\b")
+GLUE_PORT_VALUE = re.compile(r"\bGPIO[A-K]\b(?!\s*->)")
+GLUE_PORT_ADDR = re.compile(r"\b0x400[0-9A-Fa-f]{5}\b")
+# 空转循环里必须出现硬件或标志语义才判忙等；纯空主循环与软件计数延时不算
+GLUE_WAIT_HINT = re.compile(r"(->|\b\w*(?:flag|ready|busy|done|status|state)\w*\b)", re.I)
+ELSE_IF = re.compile(r"\belse\s+if\s*\(")
+GLUE_LEVELS = ("off", "warn", "error")
+# 故障出口：不再返回调度，允许多少阻塞；经典命名如 HAL 生成的 Error_Handler
+FAULT_HANDLER_NAME = re.compile(
+    r"^(?:error_handler|error_loop|fault_\w*|panic\w*|hardfault\w*|default_handler)$", re.I)
 
 SKIP_DIRS = {
     ".git", "build", "Build", "Debug", "Release", "Objects", "Listings", ".vscode",
@@ -587,6 +616,195 @@ def check_glue_length(raw: str, masked: str, limit: int):
     return []
 
 
+# ---- 胶水层语义检查（v3.3） ----
+
+
+def _matching(text: str, start: int, open_ch="(", close_ch=")") -> int:
+    """返回与 start 处开括号配对的闭括号下标；找不到则返回末尾。"""
+    depth = 0
+    for i in range(start, len(text)):
+        if text[i] == open_ch:
+            depth += 1
+        elif text[i] == close_ch:
+            depth -= 1
+            if depth == 0:
+                return i
+    return len(text) - 1
+
+
+def _brace_pairs(text: str):
+    pairs = {}
+    stack = []
+    for i, ch in enumerate(text):
+        if ch == "{":
+            stack.append(i)
+        elif ch == "}" and stack:
+            pairs[stack.pop()] = i
+    return pairs
+
+
+def _is_local_def(line: str, name: str, local_funcs) -> bool:
+    """该行是同名本地函数的定义（不是调用），用于避免"原型/定义当成调用"的老误报。
+
+    只看行首"返回类型 + 函数名 ("的形态，因此 `delay_ms(10);` 这类调用不会被误认。
+    """
+    if name not in local_funcs:
+        return False
+    pattern = (r"^\s*(?:(?:static|inline|extern)\s+)*[A-Za-z_]\w*[\w \t\*]*?\b"
+               + re.escape(name) + r"\s*\(")
+    return bool(re.match(pattern, line))
+
+
+def check_glue_lines(masked: str, raw_lines, local_funcs, wait_level: str, pin_level: str):
+    """胶水层逐行语义：阻塞延时、忙等空转、硬编码引脚/端口。返回 [(级别, 行号, 消息)]。"""
+    issues = []
+    loops = {}
+    if wait_level != "off":
+        for no, msg in find_busy_loops(masked, raw_lines):
+            loops[no] = msg
+
+    # 故障出口里的阻塞属于设计（不再返回调度），只豁免 18 项
+    fault_spans = [
+        (def_line, body_line + body.count("\n"))
+        for name, def_line, body, body_line in iter_functions(masked)
+        if FAULT_HANDLER_NAME.match(name)
+    ]
+
+    def in_fault_exit(no):
+        return any(start <= no <= end for start, end in fault_spans)
+
+    for no, line in enumerate(masked.splitlines(), 1):
+        raw = raw_lines[no - 1] if no <= len(raw_lines) else ""
+        if "arch-allow" in raw or line.lstrip().startswith("#"):
+            continue
+        if wait_level != "off" and not in_fault_exit(no):
+            if no in loops:
+                issues.append((wait_level, no, loops[no]))
+            elif not DECL_ONLY_LINE.match(line):  # 原型声明不是调用
+                m = GLUE_DELAY_CALL.search(line)
+                if m:
+                    name = m.group(0).split("(", 1)[0].strip()
+                    if not _is_local_def(line, name, local_funcs):
+                        issues.append((wait_level, no,
+                                       f"胶水层阻塞延时：{name}()（初始化外的等待应下沉到端口/时基，"
+                                       f"运行期轮询改非阻塞）"))
+        if pin_level != "off":
+            m = GLUE_PIN_CONST.search(line) or GLUE_PORT_VALUE.search(line) or GLUE_PORT_ADDR.search(line)
+            if m:
+                issues.append((pin_level, no,
+                               f"胶水层硬编码引脚/端口：{m.group(0)}（引脚映射应归端口层）"))
+    return issues
+
+
+def find_busy_loops(masked: str, raw_lines):
+    """空转等待硬件/标志的 while/for 循环。
+
+    只认“循环体为空（或只有分号）且条件里出现寄存器或 ready/busy/flag 之类语义”。
+    这样能抓住 `while ((I2C1->CR1 & X) && t--) {}`，又不会把
+    `while (1) {}`、`for (;;) {}`、`for (volatile i...) {}` 这些主循环/故障出口误判。
+    """
+    issues = []
+    pairs = _brace_pairs(masked)
+
+    # do { ... } while (...)：尾部 while 不是空体 while，先登记以免误判
+    do_whiles = set()
+    for m in re.finditer(r"\bdo\b", masked):
+        j = _skip_ws(masked, m.end())
+        if j < len(masked) and masked[j] == "{":
+            close = pairs.get(j)
+            if close is None:
+                continue
+            k = _skip_ws(masked, close + 1)
+            if masked.startswith("while", k):
+                do_whiles.add(k)
+
+    for m in re.finditer(r"\b(while|for)\b", masked):
+        pos = m.start()
+        if pos in do_whiles:
+            continue
+        line_start = masked.rfind("\n", 0, pos) + 1
+        if masked[line_start:pos].lstrip().startswith("#"):
+            continue
+        no = masked.count("\n", 0, pos) + 1
+        raw = raw_lines[no - 1] if no <= len(raw_lines) else ""
+        if "arch-allow" in raw:
+            continue
+        j = _skip_ws(masked, m.end())
+        if j >= len(masked) or masked[j] != "(":
+            continue
+        cond_end = _matching(masked, j)
+        cond = masked[j:cond_end + 1]
+        k = _skip_ws(masked, cond_end + 1)
+        empty = False
+        if k < len(masked) and masked[k] == ";":
+            empty = True
+        elif k < len(masked) and masked[k] == "{":
+            close = pairs.get(k)
+            if close is not None and not masked[k + 1:close].strip(" \t\r\n;"):
+                empty = True
+        if not empty or not GLUE_WAIT_HINT.search(cond):
+            continue
+        issues.append((no, f"胶水层忙等：{m.group(1)} 循环空转等待硬件/标志（应下沉到端口层或改非阻塞）"))
+    return issues
+
+
+def check_glue_funcs(masked: str, raw_lines, limit: int):
+    """单个胶水函数代码行超过 limit。"""
+    if limit <= 0:
+        return []
+    issues = []
+    for name, def_line, body, _ in iter_functions(masked):
+        code = sum(
+            1 for line in body.splitlines()
+            if line.strip() and line.strip() not in ("{", "}") and not line.strip().startswith("#")
+        )
+        if code <= limit:
+            continue
+        raw = raw_lines[def_line - 1] if def_line <= len(raw_lines) else ""
+        if "arch-allow" in raw:
+            continue
+        issues.append((def_line, f"胶水层函数 {name} 有 {code} 行代码（上限 {limit}）；"
+                                 f"拆出组件或改成表驱动"))
+    return issues
+
+
+def check_glue_dispatch(masked: str, raw_lines, threshold: int):
+    """单函数内足够长的字符串 else-if 链：命令分发应改注册表。"""
+    issues = []
+    for name, def_line, body, body_line in iter_functions(masked):
+        count = 0
+        for m in ELSE_IF.finditer(body):
+            j = body.find("(", m.start())
+            if j < 0:
+                continue
+            cond = body[j:_matching(body, j) + 1]
+            if '"' not in cond:
+                continue
+            no = body_line + body.count("\n", 0, m.start())
+            raw = raw_lines[no - 1] if no <= len(raw_lines) else ""
+            if "arch-allow" in raw:
+                continue
+            count += 1
+        if count < threshold:
+            continue
+        raw = raw_lines[def_line - 1] if def_line <= len(raw_lines) else ""
+        if "arch-allow" in raw:
+            continue
+        issues.append((def_line,
+                       f"胶水层函数 {name} 有 {count} 个字符串 else-if 分支（阈值 {threshold}）；"
+                       f"命令分发应改注册表"))
+    return issues
+
+
+def emit_glue(level: str, rel: str, issues, errors, warns):
+    """按级别把胶水层发现写入 errors / warns。"""
+    if level == "off":
+        return
+    target = errors if level == "error" else warns
+    for no, msg in issues:
+        target.append((rel, no, msg))
+
+
 # ---------------------------------------------------------------- 跨文件索引
 
 
@@ -796,6 +1014,16 @@ def main():
     parser.add_argument("root", nargs="?", help="工程根目录")
     parser.add_argument("--roles", default=None, help="角色清单文件路径")
     parser.add_argument("--glue-max-lines", type=int, default=200, help="入口胶水文件代码行上限")
+    parser.add_argument("--glue-wait", choices=GLUE_LEVELS, default="warn",
+                        help="胶水层忙等/阻塞延时级别（默认 warn）")
+    parser.add_argument("--glue-pin", choices=GLUE_LEVELS, default="warn",
+                        help="胶水层硬编码引脚/端口级别（默认 warn）")
+    parser.add_argument("--glue-max-func-lines", type=int, default=80,
+                        help="胶水层单个函数代码行上限，0 关闭（默认 80）")
+    parser.add_argument("--glue-dispatch", choices=GLUE_LEVELS, default="warn",
+                        help="胶水层字符串 else-if 命令链级别（默认 warn）")
+    parser.add_argument("--glue-dispatch-chain", type=int, default=4,
+                        help="触发命令链提示的最少字符串 else-if 分支数（默认 4）")
     parser.add_argument("--max-per-file", type=int, default=5, help="未分层文件每文件最多提示条数")
     parser.add_argument("--no-linker", action="store_true", help="跳过链接脚本检查")
     parser.add_argument("--allow-unlayered", action="store_true",
@@ -1011,6 +1239,15 @@ def main():
 
         if layer == "glue":
             errors.extend((rel, no, msg) for no, msg in check_glue_length(raw, masked, args.glue_max_lines))
+            if path.endswith(".c"):
+                for level, no, msg in check_glue_lines(
+                        masked, raw_lines, local_funcs, args.glue_wait, args.glue_pin):
+                    (errors if level == "error" else warns).append((rel, no, msg))
+                emit_glue("warn", rel, check_glue_funcs(masked, raw_lines, args.glue_max_func_lines),
+                          errors, warns)
+                emit_glue(args.glue_dispatch, rel,
+                          check_glue_dispatch(masked, raw_lines, args.glue_dispatch_chain),
+                          errors, warns)
         else:
             if layer in NON_BSP_LAYERS:
                 if path.endswith(".c"):
