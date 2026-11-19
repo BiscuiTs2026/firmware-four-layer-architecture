@@ -17,3 +17,22 @@ static int (*res_hook)(int) = res_claim;
 
 /* 不算定义：宏包装 */
 #define res_wrap(x) res_claim(x)
+
+/* 反例：跨行原型的契约符号同样被 bsp 重复定义 */
+int
+cmn_mul(int a, int b)
+{
+    return a * b;
+}
+
+int cmn_div(int a,
+            int b)
+{
+    return b ? a / b : 0;
+}
+
+static const int
+cmn_scale(int x)
+{
+    return x;
+}

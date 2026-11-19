@@ -1,1 +1,4 @@
 [ERROR] src/res_contract.h:4 共享契约符号 res_claim 应有且仅有一处带函数体的定义，实际 2 处（src/bsp_timer.c:4；src/res_arb.c:3）
+[ERROR] src/res_contract.h:9 共享契约符号 cmn_mul 应有且仅有一处带函数体的定义，实际 2 处（src/bsp_timer.c:23；src/res_arb.c:14）
+[ERROR] src/res_contract.h:13 共享契约符号 cmn_div 应有且仅有一处带函数体的定义，实际 2 处（src/bsp_timer.c:28；src/res_arb.c:19）
+[ERROR] src/res_contract.h:17 共享契约符号 cmn_scale 应有且仅有一处带函数体的定义，实际 2 处（src/bsp_timer.c:35；src/res_arb.c:26）

@@ -766,6 +766,16 @@ def check_glue_lines(masked: str, raw_lines, local_funcs, wait_level: str, pin_l
     def in_fault_exit(no):
         return any(start <= no <= end for start, end in fault_spans)
 
+    # ISR 内读 IDR 是标准中断分发（A1 允许），G7 与 G1 同口径豁免
+    isr_spans = [
+        (def_line, body_line + body.count("\n"))
+        for name, def_line, body, body_line in iter_functions(masked)
+        if ISR_NAME.search(name)
+    ]
+
+    def in_isr(no):
+        return any(start <= no <= end for start, end in isr_spans)
+
     pin_aliases = find_pin_aliases(masked)
     reported_aliases = set()
 
@@ -790,9 +800,10 @@ def check_glue_lines(masked: str, raw_lines, local_funcs, wait_level: str, pin_l
                 issues.append((pin_level, no,
                                f"胶水层硬编码引脚/端口：{m.group(0)}（引脚映射应归端口层）"))
             elif GLUE_IDR_READ.search(line):
-                issues.append((pin_level, no,
-                               "胶水层直接读引脚电平：->IDR（业务性读应封装成端口层接口；"
-                               "初始化一次性采样请注明理由）"))
+                if not in_isr(no):
+                    issues.append((pin_level, no,
+                                   "胶水层直接读引脚电平：->IDR（业务性读应封装成端口层接口；"
+                                   "初始化一次性采样请注明理由）"))
             else:
                 for alias, value in pin_aliases.items():
                     if alias in reported_aliases:
@@ -957,8 +968,13 @@ def _if_chain_len(body: str) -> int:
     return best
 
 
-def check_glue_duty(masked: str, raw_lines, if_chain: int):
-    """胶水层职责：驱动实现、协议分帧、状态机、ISR 体量、长 if 链。"""
+def check_glue_duty(masked: str, raw_lines, if_chain: int, skip_chain_lines=None):
+    """胶水层职责：驱动实现、协议分帧、多分支 switch、ISR 体量、长 if 链。
+
+    `skip_chain_lines`：已由第 21 项（字符串 else-if 命令链）报过的函数定义行；
+    同一函数不再重复报 G10。
+    """
+    skip_chain_lines = skip_chain_lines or set()
     issues = []
     for name, def_line, body, _ in iter_functions(masked):
         raw = raw_lines[def_line - 1] if def_line <= len(raw_lines) else ""
@@ -984,8 +1000,8 @@ def check_glue_duty(masked: str, raw_lines, if_chain: int):
         cases = len(re.findall(r"\bcase\b", body))
         if cases >= GLUE_DUTY_CASES:
             issues.append((def_line,
-                           f"胶水层常驻状态机：函数 {name} 有 {cases} 个 case 分支；"
-                           f"状态机应下沉到组件层"))
+                           f"胶水层函数 {name} 有 {cases} 个 switch 分支；"
+                           f"多分支判定应下沉到组件层（本函数不一定是状态机）"))
 
         if isr:
             code = _code_line_count(body)
@@ -995,7 +1011,7 @@ def check_glue_duty(masked: str, raw_lines, if_chain: int):
                                f"ISR 只做清标志/写快照/置位交棒"))
 
         chain = _if_chain_len(body)
-        if chain >= if_chain:
+        if chain >= if_chain and def_line not in skip_chain_lines:
             issues.append((def_line,
                            f"胶水层函数 {name} 的 if/else-if 链有 {chain} 个分支（阈值 {if_chain}）；"
                            f"改表驱动或下沉"))
@@ -1082,10 +1098,89 @@ def build_function_index(root: str, cfg):
     return index
 
 
-PROTO_LINE = re.compile(
-    r"^\s*(?!(?:return|if|else|for|while|switch|do|case|default|goto|sizeof|typedef)\b)"
-    r"(?:[A-Za-z_]\w*[\s*]+)+(?:\*\s*)?([A-Za-z_]\w*)\s*\([^;{}]*\)\s*;\s*$"
-)
+def _split_declarations(masked: str):
+    """按文件作用域的 `;` 切声明段，返回 [(起始行号, 段文本)]。
+
+    跨行原型（返回类型独占一行、参数表换行、`static`/`const` 前导）在这里被拼成一段；
+    跳过 `#` 预处理行与续行、以及任何花括号内的内容（函数体、结构体成员、初始化器）。
+    """
+    out = []
+    buf = []
+    depth = 0
+    start_line = 1
+    line_no = 1
+    started = False
+    in_macro = False
+    for raw_line in masked.splitlines():
+        stripped = raw_line.lstrip()
+        if in_macro:
+            in_macro = raw_line.rstrip().endswith("\\")
+            line_no += 1
+            continue
+        if depth == 0 and stripped.startswith("#"):
+            in_macro = raw_line.rstrip().endswith("\\")
+            line_no += 1
+            continue
+        for ch in raw_line:
+            if ch == "{" and depth == 0:
+                # 顶层 `{`：函数体/结构体/初始化器，丢弃当前缓冲
+                buf = []
+                started = False
+                depth = 1
+                continue
+            if depth > 0:
+                if ch == "{":
+                    depth += 1
+                elif ch == "}":
+                    depth -= 1
+                continue
+            if ch == ";":
+                stmt = "".join(buf).strip()
+                if stmt:
+                    out.append((start_line, stmt))
+                buf = []
+                started = False
+            else:
+                if not started and not ch.isspace():
+                    start_line = line_no
+                    started = True
+                buf.append(ch)
+        buf.append(" ")
+        line_no += 1
+    return out
+
+
+def _declared_func_name(stmt: str):
+    """从声明段里取被声明的函数名；不是函数原型返回 None。
+
+    排除变量、数组、`typedef` 函数指针、带括号的复杂声明符；属性先替换成空格。
+    """
+    s = ATTR_GROUP.sub(lambda m: " " * len(m.group(0)), stmt)
+    s = " ".join(s.split())
+    if not s or "=" in s or "[" in s or not s.endswith(")"):
+        return None
+    depth = 0
+    k = len(s) - 1
+    while k >= 0:
+        if s[k] == ")":
+            depth += 1
+        elif s[k] == "(":
+            depth -= 1
+            if depth == 0:
+                break
+        k -= 1
+    if k < 0:
+        return None
+    m = re.search(r"([A-Za-z_]\w*)\s*$", s[:k])
+    if not m:
+        return None
+    name = m.group(1)
+    if name in CONTROL_NAMES:
+        return None
+    head = s[:m.start()].strip()
+    if not head or "(" in head or ")" in head:
+        return None
+    return name
 
 
 def collect_common_contracts(root: str, cfg):
@@ -1099,15 +1194,12 @@ def collect_common_contracts(root: str, cfg):
             continue
         raw, masked, _ = read_source(path)
         raw_lines = raw.splitlines()
-        for no, line in enumerate(masked.splitlines(), 1):
-            code = line.strip()
-            if not code or code.startswith("#") or "=" in code:
-                continue
+        for no, stmt in _split_declarations(masked):
             if no <= len(raw_lines) and "arch-allow" in raw_lines[no - 1]:
                 continue
-            m = PROTO_LINE.match(code)
-            if m:
-                index.setdefault(m.group(1), (rel, no))
+            name = _declared_func_name(stmt)
+            if name:
+                index.setdefault(name, (rel, no))
     return index
 
 
@@ -1617,11 +1709,13 @@ def main():
                     (errors if level == "error" else warns).append((rel, no, msg))
                 emit_glue("warn", rel, check_glue_funcs(masked, raw_lines, args.glue_max_func_lines),
                           errors, warns)
-                emit_glue(args.glue_dispatch, rel,
-                          check_glue_dispatch(masked, raw_lines, args.glue_dispatch_chain),
-                          errors, warns)
+                dispatch = check_glue_dispatch(masked, raw_lines, args.glue_dispatch_chain)
+                emit_glue(args.glue_dispatch, rel, dispatch, errors, warns)
+                # 第 21 项已报过的字符串 else-if 链，G10 不再重复报同一函数
+                chain_reported = {no for no, _ in dispatch} if args.glue_dispatch != "off" else set()
                 emit_glue(args.glue_duty, rel,
-                          check_glue_duty(masked, raw_lines, args.glue_if_chain), errors, warns)
+                          check_glue_duty(masked, raw_lines, args.glue_if_chain, chain_reported),
+                          errors, warns)
                 emit_glue("error", rel, check_isr_business(masked, func_index), errors, warns)
                 emit_glue(args.glue_duty, rel, find_board_tables(masked, raw_lines), errors, warns)
         else:

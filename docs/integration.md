@@ -117,10 +117,10 @@ v3.2 及以前，胶水层只有行数闸门。真实工程会把上限一路抬
 | 规则 | 选项 | 默认 | 判据摘要 |
 |---|---|---|---|
 | 忙等/阻塞延时 | `--glue-wait` | `warn` | 空体循环等待寄存器/标志；`HAL_Delay`、`*delay_ms` 等调用 |
-| 硬编码引脚/端口 | `--glue-pin` | `warn` | `GPIO_PIN_x`、作为实参的 `GPIOx`、裸 `0x400xxxxx`、`->IDR`、宏别名引脚 |
+| 硬编码引脚/端口 | `--glue-pin` | `warn` | `GPIO_PIN_x`、作为实参的 `GPIOx`、裸 `0x400xxxxx`、`->IDR`（ISR 内不判）、宏别名引脚 |
 | 单函数过长 | `--glue-max-func-lines` | 80 | 函数体内代码行数；`0` 关闭 |
 | 字符串 `else if` 命令链 | `--glue-dispatch` / `--glue-dispatch-chain` | `warn` / 4 | 同一函数内含字符串字面量的 `else if` 分支数 |
-| 胶水层职责（v3.3.1） | `--glue-duty` / `--glue-if-chain` | `warn` / 8 | 驱动实现、协议分帧、状态机、ISR 体量、长 `if` 链、板级资源表 |
+| 胶水层职责（v3.3.1） | `--glue-duty` / `--glue-if-chain` | `warn` / 8 | 驱动实现、协议分帧、多分支 `switch`、ISR 体量、长 `if` 链（与第 21 项去重）、板级资源表 |
 | 文件行数 | `--glue-max-lines` | 200 | **体积兜底，WARN**；不再承担质量判定 |
 
 升级到 3.3.x 时按下面顺序处理：

@@ -15,7 +15,7 @@ python3 skill/scripts/check_layering.py <工程根目录> [选项]
 | `--glue-max-lines N` | 200 | 入口胶水文件代码行上限；**仅作体积兜底，超限报 WARN**，不承担质量判定 |
 | `--glue-wait LEVEL` | `warn` | 胶水层忙等/阻塞延时：`off` / `warn` / `error` |
 | `--glue-pin LEVEL` | `warn` | 胶水层硬编码引脚/端口（含 `->IDR`、宏别名）：`off` / `warn` / `error` |
-| `--glue-duty LEVEL` | `warn` | 胶水层职责规则（驱动/协议/状态机/ISR 体量/长 `if` 链/板级资源表）：`off` / `warn` / `error` |
+| `--glue-duty LEVEL` | `warn` | 胶水层职责规则（驱动/协议/多分支 switch/ISR 体量/长 `if` 链/板级资源表）：`off` / `warn` / `error` |
 | `--glue-if-chain N` | 8 | 触发长 `if/else-if` 链提示的最少分支数 |
 | `--glue-max-func-lines N` | 80 | 胶水层单个函数代码行上限；`0` 关闭 |
 | `--glue-dispatch LEVEL` | `warn` | 胶水层字符串 `else if` 命令链：`off` / `warn` / `error` |
@@ -127,10 +127,10 @@ ignore = third_party/, build-*/   # 不参与扫描的路径，可多行，支�
 | 16 | `no_roles` | 全工程没有分层目录或角色清单 | ERROR | 已实现 | 工程级 |
 | 17 | `bsp_osal` | BSP 越权调用 OSAL：只允许 `*_critical_enter` / `*_critical_exit` / `*_tick_inc`，其余 `*osal_*` 调用（如 `osal_delay_ms`） | ERROR | 已实现 | `bsp/` |
 | 18 | `glue_wait` | 胶水层忙等/阻塞延时：空转等待硬件/标志的 `while`/`for`，`HAL_Delay`、`*delay_ms`、`*delay_us` 等调用 | WARN（可调级） | 已实现 | `glue` 的 `.c` |
-| 19 | `glue_pin` | 胶水层硬编码引脚/端口：`GPIO_PIN_x`、作为实参的 `GPIOx`、裸 `0x400xxxxx` 基址、`->IDR`、宏别名引脚 | WARN（可调级） | 已实现（3.3.1 补 IDR/别名） | `glue` 的 `.c` |
+| 19 | `glue_pin` | 胶水层硬编码引脚/端口：`GPIO_PIN_x`、作为实参的 `GPIOx`、裸 `0x400xxxxx` 基址、`->IDR`、宏别名引脚；ISR 函数体内读 `->IDR` 不判 | WARN（可调级） | 已实现（3.3.1 补 IDR/别名） | `glue` 的 `.c` |
 | 20 | `glue_max_func_lines` | 胶水层单个函数代码行超过 `--glue-max-func-lines` | WARN | 已实现 | `glue` 的 `.c` |
 | 21 | `glue_dispatch` | 胶水层单函数内**含字符串字面量的 `else if` 分支数**达到 `--glue-dispatch-chain`，提示改注册表 | WARN（可调级） | 已实现（语义已写死） | `glue` 的 `.c` |
-| 22 | `glue_duty` | 胶水层职责：实现外设驱动（G1）、常驻协议分帧（G2）、常驻状态机（G3）、ISR 体量超限（G5）、长 `if/else-if` 链（G10）、定义板级资源表（G11） | WARN（`--glue-duty` 可调级） | 已实现（3.3.1） | `glue` 的 `.c` |
+| 22 | `glue_duty` | 胶水层职责：实现外设驱动（G1）、常驻协议分帧（G2）、多分支 `switch`（G3）、ISR 体量超限（G5）、长 `if/else-if` 链（G10，与第 21 项去重）、定义板级资源表（G11） | WARN（`--glue-duty` 可调级） | 已实现（3.3.1） | `glue` 的 `.c` |
 | 23 | `glue_isr_business` | ISR 里做业务：ISR 调用 components / app 的非 `*_hw_*` 函数（G4） | ERROR（不可关） | 已实现（3.3.1） | `glue` 的 `.c` |
 | 24 | `glue_include` | 其它层 include 入口胶水层的文件/头（G6） | ERROR（不可关） | 已实现（3.3.1） | 全部已分层文件 |
 | 25 | `glue_nesting` | 胶水层 `if` 嵌套：与其他层同口径，带 `else` 的决策型 `if` 嵌套 > 3 层（G9） | ERROR | 已实现（3.3.1） | `glue` |
@@ -162,16 +162,19 @@ ISR 函数名匹配 `*_IRQHandler`、`*_isr`、`*_ISR`、`isr_*`，以及 CMSIS 
   - G1 驱动实现：**命中单位是函数个数**。非 init / 非 ISR / 非故障出口函数体内外设寄存器访问
     （`->REG` 或裸地址 MMIO 强转）≥ 3 次，该函数计 1 条；消息里给出访问次数。
   - G2 协议分帧：单函数 `strcmp` / `strncmp` / `ci_equal` ≥ 3 次。
-  - G3 状态机：单函数 `switch` 的 `case` ≥ 4 个（`default` 不计）。
+  - G3 多分支 `switch`：单函数 `switch` 的 `case` ≥ 4 个（`default` 不计）。命中只说明判定留在入口，
+    消息按“switch 分支”表述，不推断是不是状态机。
   - G5 ISR 体量：ISR 函数体代码行 > 40。
   - G10 长 `if` 链：同一 `if/else-if` 链分支数 ≥ `--glue-if-chain`（默认 8），任意条件，`switch` 不计。
+    同一函数已由第 21 项报过的，G10 跳过，不重复报。
 - **23 ISR 做业务**：`glue` 的 ISR 调用定义在 `components` / `app` 的函数即 ERROR；
   `*_hw_*` 钩子、`*FromISR`、`bsp` 函数、`osal` 临界区放行。经宏或函数指针的间接调用判不出（见盲区）。
 - **24 胶水层不得被 include**：任何非 glue 层 include 了 glue 的文件/头 → ERROR。
 - **25 胶水层 if 嵌套**：与第 7 项同口径，带 `else` 的决策型 `if` 嵌套 > 3 层 → ERROR。
 - **26 common 层**：见上文“`common` 层怎么判定”。
 - **27 共享契约符号**：`common` 头声明、且 `common` 确有实现 → 全仓只允许一处带体定义；
-  声明（`;`）、函数指针赋值、宏包装不计。数量不符报在契约头声明行。
+  声明（`;`）、函数指针赋值、宏包装不计。声明按文件作用域的 `;` 拼段后解析，跨行原型
+  （返回类型独占一行、参数表换行、`static` / `const` 前导）同样识别。数量不符报在契约头声明行。
   实现只落在 bsp/osal/components 的公共 API 头不判（避免把所有公共契约头映射成 common 的工程满屏误报）。
 
 G8（胶水层文件作用域变量的用途）**不实现**，理由见 `rules.md` §1.4 与本文末尾盲区表。
@@ -258,6 +261,7 @@ uint32_t g_dbg_counter;     // arch-allow:snapshot
 | 7 | **ISR 里写文件作用域状态、宏内联业务** | 与 G8 同源：变量用途与宏展开后的调用链都判不出 | 人工评审 |
 | 8 | **资源仲裁函数全仓唯一（语义层）** | 第 27 项只能抓“契约头声明 + 同名带体定义”这一种；换名字的语义重复、跨模块的功能复制判不出 | 人工评审；契约统一收敛到 `common` 头 |
 | 9 | **ISR 共享计数字段的位宽与 `volatile`** | 应由 ISR 写、主循环读的字段必须 32 位且 `volatile`，但字段名猜不出来，只能靠显式标注（如 `ISR_SHARED`）；没有标注判不出 | 人工评审；可选规则包（需工程统一标注） |
+| 10 | **ISR 内读 `->IDR` 不判** | 判上下沿是标准中断分发（A1 允许），与 G1 的 ISR 豁免同口径；G7 只报 ISR 之外的业务性读 | 人工评审：确认该 ISR 只做分发，不夹带业务 |
 
 > 另见 `rules.md` 第 13 节：初始化顺序、ISR 与主循环契约、回调穿层、函数定义提取残余边界等。
 

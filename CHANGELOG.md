@@ -22,14 +22,14 @@
 |---|---|---|
 | G1 | 胶水层实现外设驱动（**函数个数**：非 init/ISR/故障出口函数体内寄存器访问 ≥ 3 次，该函数计 1 条） | WARN |
 | G2 | 胶水层常驻协议/分帧（单函数 `strcmp` 类 ≥ 3） | WARN |
-| G3 | 胶水层常驻状态机（单函数 `switch` `case` ≥ 4） | WARN |
+| G3 | 胶水层多分支判定（单函数 `switch` `case` ≥ 4；消息按“switch 分支”表述，不推断是否为状态机） | WARN |
 | G4 | ISR 里调 components/app 的非 `*_hw_*` 函数 | ERROR |
 | G5 | ISR 函数体 > 40 代码行 | WARN |
 | G6 | 其它层 include 了 glue 的文件/头 | ERROR |
-| G7 | glue `.c` 直接读 `->IDR` | WARN（`--glue-pin`） |
+| G7 | glue `.c` 直接读 `->IDR`（ISR 函数体内不判） | WARN（`--glue-pin`） |
 | G8 | glue 文件作用域变量的用途 | **盲区，不实现** |
 | G9 | 第 7 项扩展到 glue | ERROR |
-| G10 | 同一 `if / else-if` 链分支数 ≥ 8 | WARN（`--glue-if-chain`，默认 8） |
+| G10 | 同一 `if / else-if` 链分支数 ≥ 8（与第 21 项去重，同一函数不重复报） | WARN（`--glue-if-chain`，默认 8） |
 | G11 | glue 定义板级引脚/外设资源表（`static const` 表体含 `BOARD_*` / `GPIO_PIN_n` / `GPIOx` ≥ 2 处） | WARN |
 | G12 | glue 用宏别名藏引脚（同文件 `#define NAME GPIOx` / `GPIO_PIN_n` 且被使用） | WARN（`--glue-pin`） |
 | 第 26 项 | `common` 层出现厂商头 / 厂商与内核符号（`HAL_`/`LL_`/`__HAL_`/`NVIC_`/`SysTick`/`SCB`）/ 寄存器 / 包含其它层头 | ERROR |
@@ -50,6 +50,18 @@
   夹具：`tests/probe-common-bad`、`tests/probe-common-clean`。
 - **R-CMN-3 ISR 共享计数字段（盲区，不实现）**：应由 ISR 写、主循环读的计数/状态字段必须
   32 位且 `volatile`，但字段名猜不出来，只能靠显式标注；没有标注判不出，列为可选规则包 + 盲区。
+
+### 复核返工（3.3.1 内，不改变版本号）
+
+- **第 27 项契约声明改为按 `;` 拼段解析**：此前只认单行原型，`int\ncmn_mul(int a, int b);`
+  这类跨行声明不会进入契约符号集，重复实现漏报。现在按文件作用域的 `;` 拼段（跳过注释、
+  预处理行与花括号内容），覆盖“返回类型独占一行”“参数表换行”“`static` / `const` 前导”。
+  夹具：`tests/probe-common-contract` 新增 `cmn_mul` / `cmn_div` / `cmn_scale` 三形态。
+- **G7 增加 ISR 豁免**：ISR 内读 `->IDR` 判上下沿属 A1 允许的中断分发，与 G1 的 init/ISR 豁免对齐。
+  板端工程 `main.c:970` 的命中因此消失；盲区表补“ISR 内读 IDR 不判”。
+- **G3 消息改为“switch 分支”**：命中判定不变（`case` ≥ 4），但不再把它一律叫“常驻状态机”。
+- **G10 与第 21 项去重**：同一函数已由第 21 项（字符串 `else if` 命令链）报过时，G10 跳过；
+  板端 `cmd_execute` 不再一行两条 WARN。
 
 ### 修复
 

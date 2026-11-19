@@ -9,3 +9,11 @@ int main(void)
     GPIOB->ODR = 0x1u;
     return 0;
 }
+
+/* 反例：ISR 内读 IDR 属中断分发（A1），G7 与 G1 同口径豁免 */
+void EXTI15_10_IRQHandler(void)
+{
+    if (GPIOA->IDR & 0x2u) {
+        GPIOA->BSRR = 0x2u;
+    }
+}
