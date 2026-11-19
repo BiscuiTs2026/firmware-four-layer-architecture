@@ -1,0 +1,4 @@
+[WARN ] src/pins.c:5 胶水层定义板级资源表：board_pins（引脚/资源常量映射属端口层数据；glue 只消费表，定义应移到端口层）
+[WARN ] src/pins.c:6 胶水层硬编码引脚/端口：GPIO_PIN_0（引脚映射应归端口层）
+[WARN ] src/pins.c:7 胶水层硬编码引脚/端口：GPIO_PIN_1（引脚映射应归端口层）
+[WARN ] src/pins.c:8 胶水层硬编码引脚/端口：GPIO_PIN_2（引脚映射应归端口层）

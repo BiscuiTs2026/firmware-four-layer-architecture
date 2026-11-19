@@ -1,0 +1,3 @@
+src/app_main.c = app
+src/port_hw.c = bsp
+src/core_logic.c = components

@@ -1,0 +1,2 @@
+[ERROR] main.c:50 ISR 里做业务：TIM2_IRQHandler 调用 components/ 的 pm_logic_step；ISR 只允许清标志/快照/交棒/*_hw_* 钩子
+[WARN ] main.c:5 中断服务函数 TIM2_IRQHandler 有 45 行代码（上限 40）；ISR 只做清标志/写快照/置位交棒

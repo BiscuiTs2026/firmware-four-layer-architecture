@@ -1,0 +1,4 @@
+# src/main.c    = glue
+# src/pins.c    = glue
+src/main.c = glue
+src/pins.c = glue

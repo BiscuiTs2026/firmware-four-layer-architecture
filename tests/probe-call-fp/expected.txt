@@ -1,3 +1,5 @@
 # 对抗夹具：函数原型不是调用（模型项目 include/pm/pm_err.h:28 的同类误报）
 # 旧版把 common 头里的 comp_calc 原型也判成反向调用，多报 1 条；真实调用仍须报出
+# 第 27 项只判“common 头声明且 common 里确有实现”的符号；本夹具的实现只在 components/，
+# 属于公共 API 头，不触发契约唯一性
 [ERROR] common/helper.c:5 反向依赖：common/ 调用上层函数 comp_calc（定义在 components/）

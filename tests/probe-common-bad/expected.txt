@@ -1,0 +1,7 @@
+[ERROR] src/common_math.c:2 平台头泄漏：stm32f1xx_hal.h
+[ERROR] src/common_math.c:3 反向依赖：common/ 包含 bsp/ 的 bsp_port.h
+[ERROR] src/common_math.c:7 common 层出现厂商/内核符号：HAL_Init
+[ERROR] src/common_math.c:8 common 层访问寄存器（common 只放与硬件无关的纯逻辑）
+[ERROR] src/common_math.c:9 反向依赖：common/ 调用上层函数 bsp_port_led_on（定义在 bsp/）
+[ERROR] src/common_math.c:15 common 层出现厂商/内核符号：NVIC_EnableIRQ
+[WARN ] src/common_math.c:20 common 层出现寄存器风格解引用（大写标识符->成员）；纯数据聚合可忽略，跨层共享的硬件句柄应移到端口层

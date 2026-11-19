@@ -33,11 +33,26 @@ CASES = [
     ("tests/probe-glue-func", os.path.join(ROOT, "tests", "probe-glue-func", "expected.txt"),
      ["--glue-max-func-lines", "20"]),
     ("tests/probe-glue-dispatch", os.path.join(ROOT, "tests", "probe-glue-dispatch", "expected.txt")),
+    # v3.3.1 胶水层职责与 ISR/嵌套/属性形态
+    ("tests/probe-glue-duty", os.path.join(ROOT, "tests", "probe-glue-duty", "expected.txt")),
+    ("tests/probe-glue-isr", os.path.join(ROOT, "tests", "probe-glue-isr", "expected.txt")),
+    ("tests/probe-glue-idr", os.path.join(ROOT, "tests", "probe-glue-idr", "expected.txt")),
+    ("tests/probe-glue-ifchain", os.path.join(ROOT, "tests", "probe-glue-ifchain", "expected.txt")),
+    ("tests/probe-glue-nesting", os.path.join(ROOT, "tests", "probe-glue-nesting", "expected.txt")),
+    ("tests/probe-glue-attrs", os.path.join(ROOT, "tests", "probe-glue-attrs", "expected.txt"),
+     ["--glue-max-func-lines", "20"]),
+    ("tests/probe-glue-boardtable", os.path.join(ROOT, "tests", "probe-glue-boardtable", "expected.txt")),
+    ("tests/probe-app-portcall", os.path.join(ROOT, "tests", "probe-app-portcall", "expected.txt")),
+    ("tests/probe-glue-alias", os.path.join(ROOT, "tests", "probe-glue-alias", "expected.txt")),
+    # v3.3.1 common 层：厂商头/HAL/寄存器/反向依赖
+    ("tests/probe-common-bad", os.path.join(ROOT, "tests", "probe-common-bad", "expected.txt")),
+    ("tests/probe-common-contract", os.path.join(ROOT, "tests", "probe-common-contract", "expected.txt")),
 ]
 
 # 示例工程必须零 ERROR、零 WARN
 CLEAN = ["examples/good-hal", "examples/good-baremetal", "examples/flat", "examples/two-layer",
-         "tests/probe-glue-clean", "tests/probe-glue-func"]
+         "tests/probe-glue-clean", "tests/probe-glue-func", "tests/probe-bsp-boardtable",
+         "tests/probe-common-clean"]
 
 
 def load_expected(path):
@@ -103,6 +118,12 @@ def run_glue_switches():
         ("tests/probe-glue-pin", ["--glue-wait", "off", "--glue-pin", "off"]),
         ("tests/probe-glue-dispatch", ["--glue-dispatch", "off"]),
         ("tests/probe-glue-func", ["--glue-max-func-lines", "0"]),
+        ("tests/probe-glue-duty", ["--glue-duty", "off"]),
+        ("tests/probe-glue-idr", ["--glue-pin", "off"]),
+        ("tests/probe-glue-ifchain", ["--glue-duty", "off"]),
+        ("tests/probe-glue-boardtable", ["--glue-duty", "off", "--glue-pin", "off"]),
+        ("tests/probe-glue-attrs", ["--glue-max-func-lines", "0"]),
+        ("tests/probe-glue-alias", ["--glue-pin", "off"]),
     ]
     ok = True
     for rel_root, flags in checks:

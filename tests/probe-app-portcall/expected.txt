@@ -1,0 +1,1 @@
+[ERROR] src/app_main.c:8 APP 直调 BSP：pm_f1_gpio_write（应经组件层）

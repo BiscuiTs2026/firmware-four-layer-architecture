@@ -1,0 +1,1 @@
+[ERROR] src/res_contract.h:4 共享契约符号 res_claim 应有且仅有一处带函数体的定义，实际 2 处（src/bsp_timer.c:4；src/res_arb.c:3）

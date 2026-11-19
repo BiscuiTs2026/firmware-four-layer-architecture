@@ -1,0 +1,1 @@
+[WARN ] main.c:4 胶水层函数 hint 的 if/else-if 链有 8 个分支（阈值 8）；改表驱动或下沉

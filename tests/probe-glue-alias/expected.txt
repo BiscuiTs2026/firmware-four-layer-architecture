@@ -1,0 +1,2 @@
+[WARN ] main.c:9 胶水层引脚宏别名：LED_PORT = GPIOA（引脚映射应归端口层）
+[WARN ] main.c:10 胶水层引脚宏别名：LED_PIN = GPIO_PIN_5（引脚映射应归端口层）

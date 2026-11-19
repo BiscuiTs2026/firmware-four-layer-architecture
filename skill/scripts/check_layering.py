@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # source-repo: https://github.com/BiscuiTs2026/firmware-four-layer-architecture
-# checker-version: 3.3.0
+# checker-version: 3.3.1
 # source-commit: self    ← 上游仓库内为 self；拷到使用方仓库后改成上游提交哈希，并在 tools/CHECKER.lock 里登记
-"""check_layering.py — 四层架构启发式静态检查（v3.3）。
+"""check_layering.py — 四层架构启发式静态检查（v3.3.1）。
 
 用法：
     python3 check_layering.py <工程根目录> [选项]
@@ -10,9 +10,12 @@
 
 选项：
     --roles PATH        角色清单文件，默认在工程根目录找 .arch-roles / arch-roles.txt
-    --glue-max-lines N  入口胶水文件行数上限，默认 200
+    --glue-max-lines N  入口胶水文件行数上限，默认 200；仅作体积兜底，不承担质量判定
     --glue-wait LEVEL   胶水层忙等/阻塞延时级别：off / warn / error，默认 warn
     --glue-pin LEVEL    胶水层硬编码引脚/端口级别：off / warn / error，默认 warn
+    --glue-duty LEVEL   胶水层职责规则（驱动/协议/状态机/ISR 体量/长命令链/资源表）：
+                        off / warn / error，默认 warn
+    --glue-if-chain N   触发长 if/else-if 链提示的最少分支数，默认 8
     --glue-max-func-lines N  胶水层单个函数代码行上限，默认 80；0 关闭
     --glue-dispatch LEVEL    胶水层字符串 else-if 命令链级别：off / warn / error，默认 warn
     --glue-dispatch-chain N  触发命令链提示的最少字符串 else-if 分支数，默认 4
@@ -57,7 +60,7 @@
      7. 决策型 if 嵌套超过 3 层 → ERROR（单分支守卫不计，避免字模/像素循环误报）
      8. 未分层文件的平台调用 → WARN
      9. APP 直调 BSP 或越权调用 OSAL → ERROR
-    10. 入口胶水层超过 --glue-max-lines → ERROR
+    10. 入口胶水层超过 --glue-max-lines → WARN（体积兜底，不承担质量判定）
     11. ISR 内调用阻塞/格式化/动态内存函数 → ERROR（含 SysTick_Handler 等 CMSIS 内核中断）
     12. 阻塞延时：bsp 之外的 HAL_Delay → ERROR；app/组件层裸 delay_ms 等 → WARN
     13. 固定地址段：同址、未 4 字节对齐、固定段内使用通配符、C 段未在 .ld 显式定义 → ERROR；
@@ -67,9 +70,21 @@
     16. 工程完全没有分层目录或角色清单 → ERROR（可用 --allow-unlayered 显式关闭）
     17. BSP 越权调用 OSAL → ERROR（仅允许 *critical_enter / *critical_exit / *tick_inc）
     18. 胶水层忙等/阻塞延时（空转等待硬件或标志位、HAL_Delay 之类）→ 默认 WARN
-    19. 胶水层硬编码引脚/端口（GPIO_PIN_x、作为实参的 GPIOx、裸 0x400xxxxx）→ 默认 WARN
+    19. 胶水层硬编码引脚/端口（GPIO_PIN_x、作为实参的 GPIOx、裸 0x400xxxxx、直接读 IDR）→ 默认 WARN
     20. 胶水层单个函数代码行超过 --glue-max-func-lines（默认 80）→ WARN
     21. 胶水层单函数内字符串 else-if 链达到 --glue-dispatch-chain（默认 4）→ WARN
+    22. 胶水层职责（--glue-duty，默认 WARN）：
+        实现外设驱动（非 init/ISR/故障出口函数体内寄存器 >=3）、常驻协议分帧（strcmp 类 >=3）、
+        常驻状态机（switch case >=4）、ISR 函数体 >40 代码行、
+        同一 if/else-if 链分支 >= --glue-if-chain（默认 8）、定义板级资源/引脚表
+    23. ISR 里做业务：glue 的 ISR 调用 components/app 的非 *_hw_* 函数 → ERROR
+    24. 其它层 include 入口胶水层的文件/头 → ERROR
+    25. 胶水层 if 嵌套：与其他层同口径，决策型 if 嵌套 >3 层 → ERROR
+    26. common 层（纯逻辑）：出现厂商头、厂商/内核符号（HAL_/LL_/__HAL_/NVIC_/SysTick/SCB）、
+        寄存器访问，或包含 bsp/components/app/osal/glue 的头 → ERROR；
+        大写标识符->成员 的解引用 → WARN（可能是纯数据聚合）
+    27. 共享契约符号：common 头声明、且 common 里确有实现的函数，全仓带函数体的定义必须恰好 1 处
+        → ERROR（声明、函数指针赋值、宏包装不计；实现只落在 bsp/osal/components 的公共 API 头不判）
 
 豁免：
     - 行尾 `// arch-allow` 跳过该行全部检查；
@@ -86,7 +101,7 @@ import os
 import re
 import sys
 
-CHECKER_VERSION = "3.3.0"
+CHECKER_VERSION = "3.3.1"
 SOURCE_REPO = "https://github.com/BiscuiTs2026/firmware-four-layer-architecture"
 SOURCE_COMMIT = "self"  # 上游仓库内保持 self；使用方拷贝后改为上游提交哈希
 
@@ -162,9 +177,7 @@ GLOBAL_VAR = re.compile(
 )
 EXTERN_VAR = re.compile(r"^extern\s+(?!.*\()\w.*;\s*$")
 
-BSP_PREFIX_CALL = re.compile(r"\b(bsp|osal)_[a-z][a-z0-9_]*\s*\(")
-
-# BSP 允许使用的 OSAL 符号：仅临界区进入/退出与 tick 递增（issue #4）
+EXTERN_FUNC = re.compile(r"\bextern\s+[^;{}()]*?\b([A-Za-z_]\w*)\s*\([^;{}]*\)\s*;")
 OSAL_CALL = re.compile(r"\b((?:[A-Za-z_]\w*_)?osal_[A-Za-z_]\w*)\s*\(")
 BSP_OSAL_ALLOWED = ("critical_enter", "critical_exit", "tick_inc")
 
@@ -183,7 +196,6 @@ ISR_NAME = re.compile(
     r"|^PendSV_Handler$)"
 )
 
-EXTERN_FUNC = re.compile(r"\bextern\s+[^;{}()]*?\b([A-Za-z_]\w*)\s*\([^;{}]*\)\s*;")
 DEFINE_LINE = re.compile(r"^\s*#\s*define\s+([A-Za-z_]\w*)")
 CALL_NAME = re.compile(r"\b([A-Za-z_]\w*)\s*\(")
 
@@ -224,6 +236,19 @@ GLUE_LEVELS = ("off", "warn", "error")
 # 故障出口：不再返回调度，允许多少阻塞；经典命名如 HAL 生成的 Error_Handler
 FAULT_HANDLER_NAME = re.compile(
     r"^(?:error_handler|error_loop|fault_\w*|panic\w*|hardfault\w*|default_handler)$", re.I)
+
+# ---- v3.3.1 胶水层职责规则（--glue-duty）----
+GLUE_INIT_NAME = re.compile(r"(?:^|_)(?:init|config|setup|clock)\w*$", re.I)
+GLUE_STRCMP = re.compile(r"\b(?:strcmp|strncmp|ci_equal)\s*\(")
+GLUE_IDR_READ = re.compile(r"->\s*IDR\b")
+GLUE_DUTY_REGS = 3       # G1：非 init/ISR 函数体内硬件寄存器访问次数阈值
+GLUE_DUTY_STRCMP = 3     # G2：单函数协议比较次数阈值
+GLUE_DUTY_CASES = 4      # G3：单函数 switch case 数阈值
+GLUE_ISR_MAX_LINES = 40  # G5：ISR 函数体代码行阈值
+GLUE_RESOURCE_TOKEN = re.compile(r"\b(?:BOARD_[A-Z0-9_]+|GPIO_PIN_\d+|GPIO[A-K])\b")
+# common 层：厂商/内核符号与寄存器风格解引用
+COMMON_VENDOR = re.compile(r"\b(?:HAL_|__HAL_|LL_|NVIC_)\w*|\b(?:SysTick|SCB)\b")
+COMMON_REG_DEREF = re.compile(r"\b[A-Z][A-Z0-9_]*\s*->\s*[A-Za-z_]\w*")
 
 SKIP_DIRS = {
     ".git", "build", "Build", "Debug", "Release", "Objects", "Listings", ".vscode",
@@ -571,30 +596,84 @@ def find_extern_vars(masked: str, raw_lines):
     return issues
 
 
-FUNC_DEF = re.compile(
-    r"(?m)^[A-Za-z_][\w \t\*]*?\b([A-Za-z_]\w*)\s*\([^;{}]*\)\s*\{"
-)
+CONTROL_NAMES = {"if", "for", "while", "switch", "do", "else", "return", "sizeof", "case", "default"}
+ATTR_GROUP = re.compile(r"__attribute__\s*\(\(.*?\)\)", re.S)
+
+
+def _parse_func_signature(sig: str):
+    """从 `{` 之前的签名文本里取函数名与名字的起始偏移；不是函数定义返回 (None, -1)。
+
+    支持：前导 `__attribute__((...))`、`static inline` 组合、返回类型独占一行、
+    参数表跨行、参数后的属性。排除：控制语句、初始化器、`#define`、函数指针声明。
+    """
+    if not sig.strip() or len(sig) > 8000:
+        return None, -1
+    # 跳过 `#include` / `#endif` 之类的预处理行；宏体本身没有以 `)` 结尾的签名
+    base = 0
+    offset = 0
+    for line in sig.splitlines(keepends=True):
+        if line.lstrip().startswith("#"):
+            line_end = sig.find("\n", offset)
+            if line_end < 0:
+                return None, -1
+            base = line_end + 1
+        offset += len(line)
+    sig = sig[base:]
+    if not sig.strip():
+        return None, -1
+    # 属性替换成等长空格，保证偏移与原文对齐
+    s = ATTR_GROUP.sub(lambda m: " " * len(m.group(0)), sig).rstrip()
+    if not s.endswith(")"):
+        return None, -1
+    depth = 0
+    k = len(s) - 1
+    while k >= 0:
+        if s[k] == ")":
+            depth += 1
+        elif s[k] == "(":
+            depth -= 1
+            if depth == 0:
+                break
+        k -= 1
+    if k < 0:
+        return None, -1
+    m = re.search(r"([A-Za-z_]\w*)\s*$", s[:k])
+    if not m or m.group(1) in CONTROL_NAMES:
+        return None, -1
+    head = s[:m.start()]
+    if not head.strip() or "=" in head:
+        return None, -1
+    return m.group(1), base + m.start()
 
 
 def iter_functions(masked: str):
-    """粗略提取函数定义：(name, 定义行号, 函数体文本, 函数体起始行号)。"""
-    for m in FUNC_DEF.finditer(masked):
-        name = m.group(1)
-        if name in ("if", "for", "while", "switch", "return", "sizeof"):
-            continue
-        start = m.end() - 1
-        depth = 0
-        i = start
-        while i < len(masked):
-            if masked[i] == "{":
-                depth += 1
-            elif masked[i] == "}":
-                depth -= 1
-                if depth == 0:
-                    break
-            i += 1
-        body = masked[start:i + 1]
-        yield name, masked.count("\n", 0, m.start()) + 1, body, masked.count("\n", 0, start) + 1
+    """提取函数定义：(name, 定义行号, 函数体文本, 函数体起始行号)。
+
+    按顶层花括号配对扫描，而不是靠单行正则；这样 `__attribute__`、跨行签名、
+    `static inline` 都不会漏，也不会把 `if/for/switch` 或初始化器当成函数。
+    """
+    pairs = _brace_pairs(masked)
+    depth = 0
+    i = 0
+    n = len(masked)
+    while i < n:
+        ch = masked[i]
+        if ch == "{":
+            if depth == 0:
+                close = pairs.get(i)
+                j = max(masked.rfind(";", 0, i), masked.rfind("}", 0, i))
+                name, offset = _parse_func_signature(masked[j + 1:i])
+                if name and close is not None:
+                    open_line = masked.count("\n", 0, i) + 1
+                    name_pos = j + 1 + offset
+                    body = masked[i:close + 1]
+                    yield name, masked.count("\n", 0, name_pos) + 1, body, open_line
+                    i = close + 1
+                    continue
+            depth += 1
+        elif ch == "}":
+            depth = max(0, depth - 1)
+        i += 1
 
 
 def check_isr(masked: str):
@@ -655,6 +734,20 @@ def _is_local_def(line: str, name: str, local_funcs) -> bool:
     return bool(re.match(pattern, line))
 
 
+PIN_ALIAS_DEFINE = re.compile(
+    r"^\s*#\s*define\s+([A-Za-z_]\w*)\s+(GPIO[A-K]|GPIO_PIN_\d+)\s*$")
+
+
+def find_pin_aliases(masked: str):
+    """同文件 `#define NAME GPIOx` / `GPIO_PIN_n` 的别名表；只认单行、值就是引脚常量。"""
+    aliases = {}
+    for line in masked.splitlines():
+        m = PIN_ALIAS_DEFINE.match(line)
+        if m:
+            aliases[m.group(1)] = m.group(2)
+    return aliases
+
+
 def check_glue_lines(masked: str, raw_lines, local_funcs, wait_level: str, pin_level: str):
     """胶水层逐行语义：阻塞延时、忙等空转、硬编码引脚/端口。返回 [(级别, 行号, 消息)]。"""
     issues = []
@@ -672,6 +765,9 @@ def check_glue_lines(masked: str, raw_lines, local_funcs, wait_level: str, pin_l
 
     def in_fault_exit(no):
         return any(start <= no <= end for start, end in fault_spans)
+
+    pin_aliases = find_pin_aliases(masked)
+    reported_aliases = set()
 
     for no, line in enumerate(masked.splitlines(), 1):
         raw = raw_lines[no - 1] if no <= len(raw_lines) else ""
@@ -693,6 +789,20 @@ def check_glue_lines(masked: str, raw_lines, local_funcs, wait_level: str, pin_l
             if m:
                 issues.append((pin_level, no,
                                f"胶水层硬编码引脚/端口：{m.group(0)}（引脚映射应归端口层）"))
+            elif GLUE_IDR_READ.search(line):
+                issues.append((pin_level, no,
+                               "胶水层直接读引脚电平：->IDR（业务性读应封装成端口层接口；"
+                               "初始化一次性采样请注明理由）"))
+            else:
+                for alias, value in pin_aliases.items():
+                    if alias in reported_aliases:
+                        continue
+                    if re.search(r"\b" + re.escape(alias) + r"\b", line):
+                        reported_aliases.add(alias)
+                        issues.append((pin_level, no,
+                                       f"胶水层引脚宏别名：{alias} = {value}"
+                                       f"（引脚映射应归端口层）"))
+                        break
     return issues
 
 
@@ -796,6 +906,152 @@ def check_glue_dispatch(masked: str, raw_lines, threshold: int):
     return issues
 
 
+def _code_line_count(body: str) -> int:
+    """函数体代码行：去掉空行、纯括号行、预处理行（注释已在 mask 阶段变成空格）。"""
+    return sum(
+        1 for line in body.splitlines()
+        if line.strip() and line.strip() not in ("{", "}") and not line.strip().startswith("#")
+    )
+
+
+def _if_chain_len(body: str) -> int:
+    """同一 if / else-if 链的最大分支数（按花括号配对把 else if 串起来）。
+
+    只数链，不数零散 if；`switch` 与早退守卫链不参与。
+    """
+    pairs = _brace_pairs(body)
+    blocks = []
+    for m in re.finditer(r"\bif\b", body):
+        j = _skip_ws(body, m.end())
+        if j >= len(body) or body[j] != "(":
+            continue
+        cond_end = _matching(body, j)
+        ob = _skip_ws(body, cond_end + 1)
+        if ob >= len(body) or body[ob] != "{":
+            continue
+        close = pairs.get(ob)
+        if close is None:
+            continue
+        is_else = bool(re.search(r"\belse\s*$", body[:m.start()]))
+        blocks.append((m.start(), close, is_else))
+
+    best = 0
+    for start, close, is_else in blocks:
+        if is_else:
+            continue
+        count = 1
+        cur = close
+        while True:
+            k = _skip_ws(body, cur + 1)
+            if not body.startswith("else", k):
+                break
+            j = _skip_ws(body, k + 4)
+            if not body.startswith("if", j):
+                break
+            nxt = [b for b in blocks if b[0] == j and b[2]]
+            if not nxt:
+                break
+            count += 1
+            cur = nxt[0][1]
+        best = max(best, count)
+    return best
+
+
+def check_glue_duty(masked: str, raw_lines, if_chain: int):
+    """胶水层职责：驱动实现、协议分帧、状态机、ISR 体量、长 if 链。"""
+    issues = []
+    for name, def_line, body, _ in iter_functions(masked):
+        raw = raw_lines[def_line - 1] if def_line <= len(raw_lines) else ""
+        if "arch-allow" in raw:
+            continue
+        isr = bool(ISR_NAME.search(name))
+        init = bool(GLUE_INIT_NAME.search(name))
+        fault = bool(FAULT_HANDLER_NAME.match(name))
+
+        if not isr and not init and not fault:
+            regs = len(REG_ACCESS.findall(body)) + len(MMIO_CAST.findall(body))
+            if regs >= GLUE_DUTY_REGS:
+                issues.append((def_line,
+                               f"胶水层实现外设驱动：函数 {name} 有 {regs} 处外设寄存器访问（>= {GLUE_DUTY_REGS}）；"
+                               f"驱动应下沉到端口层（init/ISR/故障出口不判）"))
+
+        strcmp = len(GLUE_STRCMP.findall(body))
+        if strcmp >= GLUE_DUTY_STRCMP:
+            issues.append((def_line,
+                           f"胶水层常驻协议/分帧：函数 {name} 有 {strcmp} 次字符串比较；"
+                           f"协议解析应下沉到组件层"))
+
+        cases = len(re.findall(r"\bcase\b", body))
+        if cases >= GLUE_DUTY_CASES:
+            issues.append((def_line,
+                           f"胶水层常驻状态机：函数 {name} 有 {cases} 个 case 分支；"
+                           f"状态机应下沉到组件层"))
+
+        if isr:
+            code = _code_line_count(body)
+            if code > GLUE_ISR_MAX_LINES:
+                issues.append((def_line,
+                               f"中断服务函数 {name} 有 {code} 行代码（上限 {GLUE_ISR_MAX_LINES}）；"
+                               f"ISR 只做清标志/写快照/置位交棒"))
+
+        chain = _if_chain_len(body)
+        if chain >= if_chain:
+            issues.append((def_line,
+                           f"胶水层函数 {name} 的 if/else-if 链有 {chain} 个分支（阈值 {if_chain}）；"
+                           f"改表驱动或下沉"))
+    return issues
+
+
+def check_isr_business(masked: str, func_index):
+    """glue 的 ISR 调用 components/app 的非 *_hw_* 函数：中断里做了业务。"""
+    issues = []
+    for name, def_line, body, body_line in iter_functions(masked):
+        if not ISR_NAME.search(name):
+            continue
+        seen = set()
+        for m in CALL_NAME.finditer(body):
+            callee = m.group(1)
+            if callee == name or callee in seen:
+                continue
+            defs = func_index.get(callee)
+            if not defs or len(defs) != 1:
+                continue
+            only = next(iter(defs))
+            if only not in ("components", "app"):
+                continue
+            if "_hw_" in callee or re.search(r"from_isr|FromISR", callee):
+                continue
+            seen.add(callee)
+            no = body_line + body.count("\n", 0, m.start())
+            issues.append((no,
+                           f"ISR 里做业务：{name} 调用 {only}/ 的 {callee}；"
+                           f"ISR 只允许清标志/快照/交棒/*_hw_* 钩子"))
+    return issues
+
+
+def find_board_tables(masked: str, raw_lines):
+    """胶水层定义板级引脚/资源表：`static const <type> name[] = { ... }` 且表内含
+    BOARD_* / GPIO_PIN_x / GPIOx 至少两处。glue 只消费表，不定义表。"""
+    issues = []
+    pairs = _brace_pairs(masked)
+    for m in re.finditer(r"\bstatic\s+const\b[^;{}]*?\b([A-Za-z_]\w*)\s*\[[^\]]*\]\s*=\s*\{", masked):
+        ob = masked.find("{", m.start())
+        close = pairs.get(ob)
+        if close is None:
+            continue
+        body = masked[ob:close]
+        if len(GLUE_RESOURCE_TOKEN.findall(body)) < 2:
+            continue
+        no = masked.count("\n", 0, m.start()) + 1
+        raw = raw_lines[no - 1] if no <= len(raw_lines) else ""
+        if "arch-allow" in raw:
+            continue
+        issues.append((no,
+                       f"胶水层定义板级资源表：{m.group(1)}（引脚/资源常量映射属端口层数据；"
+                       f"glue 只消费表，定义应移到端口层）"))
+    return issues
+
+
 def emit_glue(level: str, rel: str, issues, errors, warns):
     """按级别把胶水层发现写入 errors / warns。"""
     if level == "off":
@@ -824,6 +1080,76 @@ def build_function_index(root: str, cfg):
         for name, _, _, _ in iter_functions(masked):
             index.setdefault(name, set()).add(layer)
     return index
+
+
+PROTO_LINE = re.compile(
+    r"^\s*(?!(?:return|if|else|for|while|switch|do|case|default|goto|sizeof|typedef)\b)"
+    r"(?:[A-Za-z_]\w*[\s*]+)+(?:\*\s*)?([A-Za-z_]\w*)\s*\([^;{}]*\)\s*;\s*$"
+)
+
+
+def collect_common_contracts(root: str, cfg):
+    """common 层头文件里声明的函数：name → (相对路径, 行号)。即共享契约符号集。"""
+    index = {}
+    for path in iter_c_files(root):
+        if not path.endswith(".h"):
+            continue
+        rel = os.path.relpath(path, root).replace("\\", "/")
+        if resolve_layer(rel, cfg) != "common":
+            continue
+        raw, masked, _ = read_source(path)
+        raw_lines = raw.splitlines()
+        for no, line in enumerate(masked.splitlines(), 1):
+            code = line.strip()
+            if not code or code.startswith("#") or "=" in code:
+                continue
+            if no <= len(raw_lines) and "arch-allow" in raw_lines[no - 1]:
+                continue
+            m = PROTO_LINE.match(code)
+            if m:
+                index.setdefault(m.group(1), (rel, no))
+    return index
+
+
+def build_definition_index(root: str, cfg):
+    """函数名 → [(层, 相对路径, 定义行)]。只收带函数体的定义，声明不计。"""
+    index = {}
+    for path in iter_c_files(root):
+        if not path.endswith(".c"):
+            continue
+        rel = os.path.relpath(path, root).replace("\\", "/")
+        layer = resolve_layer(rel, cfg)
+        if not layer:
+            continue
+        _, masked, _ = read_source(path)
+        for name, def_line, _, _ in iter_functions(masked):
+            index.setdefault(name, []).append((layer, rel, def_line))
+    return index
+
+
+def check_common_contracts(root: str, cfg):
+    """共享契约符号：common 头声明、且 common 里确有实现的函数，全仓只允许这一处带体定义。
+
+    只在 common 存在实现时才判：工程常把所有公共契约头（pm_port.h / pm_osal.h 等）
+    一并映射成 common，若对“common 头声明但实现落在 bsp/osal/components”的符号也报错，
+    会把正常的公共 API 全部误判（板级工程实测 71 条）。仲裁模块的特征是“实现落在 common”，
+    这条规则抓的是它被重复实现。
+    """
+    findings = []
+    contracts = collect_common_contracts(root, cfg)
+    definitions = build_definition_index(root, cfg)
+    for name in sorted(contracts):
+        hrel, hline = contracts[name]
+        sites = definitions.get(name)
+        if not sites:
+            continue  # 只有声明没有定义：可能是头内 static inline 或未使用，不判
+        if not any(s[0] == "common" for s in sites):
+            continue  # 公共 API 头：实现落在具体层，不属于仲裁唯一性
+        if len(sites) != 1:
+            where = "；".join(f"{s[1]}:{s[2]}" for s in sites)
+            findings.append((hrel, hline,
+                             f"共享契约符号 {name} 应有且仅有一处带函数体的定义，实际 {len(sites)} 处（{where}）"))
+    return findings
 
 
 def scan_defines(masked: str):
@@ -1013,11 +1339,16 @@ def main():
     parser = argparse.ArgumentParser(description="四层架构启发式静态检查")
     parser.add_argument("root", nargs="?", help="工程根目录")
     parser.add_argument("--roles", default=None, help="角色清单文件路径")
-    parser.add_argument("--glue-max-lines", type=int, default=200, help="入口胶水文件代码行上限")
+    parser.add_argument("--glue-max-lines", type=int, default=200,
+                        help="入口胶水文件代码行上限，仅作体积兜底（默认 200，超限报 WARN）")
     parser.add_argument("--glue-wait", choices=GLUE_LEVELS, default="warn",
                         help="胶水层忙等/阻塞延时级别（默认 warn）")
     parser.add_argument("--glue-pin", choices=GLUE_LEVELS, default="warn",
                         help="胶水层硬编码引脚/端口级别（默认 warn）")
+    parser.add_argument("--glue-duty", choices=GLUE_LEVELS, default="warn",
+                        help="胶水层职责规则级别：驱动/协议/状态机/ISR 体量/长链/资源表（默认 warn）")
+    parser.add_argument("--glue-if-chain", type=int, default=8,
+                        help="触发长 if/else-if 链提示的最少分支数（默认 8）")
     parser.add_argument("--glue-max-func-lines", type=int, default=80,
                         help="胶水层单个函数代码行上限，0 关闭（默认 80）")
     parser.add_argument("--glue-dispatch", choices=GLUE_LEVELS, default="warn",
@@ -1185,15 +1516,51 @@ def main():
                         errors.append((rel, no,
                                        f"宏间接越层：{name}（定义在 {mlayer} 层 {mrel}）"))
 
+            if layer == "common":
+                # common 是与硬件无关的纯逻辑层：只能碰 C 标准库与同层头
+                vendor = COMMON_VENDOR.search(code)
+                if vendor:
+                    errors.append((rel, no, f"common 层出现厂商/内核符号：{vendor.group(0)}"))
+                else:
+                    for pat, label in (
+                        (HAL_CALL, "common 层出现 HAL 调用"),
+                        (LL_CALL, "common 层出现 LL 调用"),
+                        (SPL_CALL, "common 层出现厂商库调用"),
+                        (RTOS_CALL, "common 层出现 RTOS 调用"),
+                    ):
+                        m = pat.search(code)
+                        if m:
+                            called = CALL_NAME.search(m.group(0))
+                            if called and called.group(1) in local_funcs:
+                                continue
+                            errors.append((rel, no, f"{label}：{m.group(0)}"))
+                if HAL_DELAY.search(code):
+                    errors.append((rel, no, "common 层出现阻塞延时：HAL_Delay"))
+                if REG_ACCESS.search(code) or MMIO_CAST.search(code):
+                    errors.append((rel, no, "common 层访问寄存器（common 只放与硬件无关的纯逻辑）"))
+                elif COMMON_REG_DEREF.search(code):
+                    warns.append((rel, no, "common 层出现寄存器风格解引用（大写标识符->成员）；纯数据聚合可忽略，"
+                                           "跨层共享的硬件句柄应移到端口层"))
+
             if layer == "app":
-                for m in BSP_PREFIX_CALL.finditer(code):
-                    name = m.group(0).rstrip("(").strip()
-                    if name.startswith("bsp_"):
+                if DECL_ONLY_LINE.match(code):
+                    continue  # 原型声明不是调用
+                seen_calls = set()
+                for m in CALL_NAME.finditer(code):
+                    name = m.group(1)
+                    if name in seen_calls:
+                        continue
+                    defs = func_index.get(name)
+                    only = next(iter(defs)) if defs and len(defs) == 1 else None
+                    # 判据按定义所在层，不依赖 bsp_ 前缀（pm_* 命名的端口函数同样要判）
+                    if only == "bsp" or name.startswith("bsp_"):
                         if not has_components:
                             continue  # 两层工程：app → bsp 是唯一向下路径
                         errors.append((rel, no, f"APP 直调 BSP：{name}（应经组件层）"))
-                    elif name not in APP_OSAL_ALLOWED:
+                        seen_calls.add(name)
+                    elif (only == "osal" or name.startswith("osal_")) and name not in APP_OSAL_ALLOWED:
                         errors.append((rel, no, f"APP 越权调用 OSAL：{name}（仅允许时间原语）"))
+                        seen_calls.add(name)
 
             if layer in UPPER_LAYERS:
                 if HAL_DELAY.search(code):
@@ -1212,6 +1579,9 @@ def main():
                 if not info:
                     continue
                 tgt_layer, tgt_rel = info
+                if tgt_layer == "glue":
+                    errors.append((rel, no, f"反向依赖：{layer}/ 包含入口胶水层的 {target}"))
+                    break
                 if LAYER_DEPTH.get(tgt_layer, -1) > LAYER_DEPTH.get(layer, 99):
                     if layer == "bsp" and tgt_layer == "osal":
                         break  # 端口层需要临界区原语与 tick（issue #4），符号级另有限制
@@ -1238,7 +1608,9 @@ def main():
             continue
 
         if layer == "glue":
-            errors.extend((rel, no, msg) for no, msg in check_glue_length(raw, masked, args.glue_max_lines))
+            # 行数只作体积兜底，不再是门禁；质量判定交给 G1–G11
+            warns.extend((rel, no, msg) for no, msg in check_glue_length(raw, masked, args.glue_max_lines))
+            errors.extend((rel, no, msg) for no, msg in check_nesting(masked))
             if path.endswith(".c"):
                 for level, no, msg in check_glue_lines(
                         masked, raw_lines, local_funcs, args.glue_wait, args.glue_pin):
@@ -1248,6 +1620,10 @@ def main():
                 emit_glue(args.glue_dispatch, rel,
                           check_glue_dispatch(masked, raw_lines, args.glue_dispatch_chain),
                           errors, warns)
+                emit_glue(args.glue_duty, rel,
+                          check_glue_duty(masked, raw_lines, args.glue_if_chain), errors, warns)
+                emit_glue("error", rel, check_isr_business(masked, func_index), errors, warns)
+                emit_glue(args.glue_duty, rel, find_board_tables(masked, raw_lines), errors, warns)
         else:
             if layer in NON_BSP_LAYERS:
                 if path.endswith(".c"):
@@ -1277,6 +1653,8 @@ def main():
 
     if not args.no_linker:
         check_linker(root, c_sections, errors, warns)
+
+    errors.extend(check_common_contracts(root, cfg))
 
     errors.sort(key=lambda x: (x[0], x[1]))
     warns.sort(key=lambda x: (x[0], x[1]))

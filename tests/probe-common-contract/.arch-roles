@@ -1,0 +1,4 @@
+src/res_contract.h = common
+src/res_arb.c      = common
+src/bsp_timer.c    = bsp
+src/app_main.c     = app

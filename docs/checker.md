@@ -12,9 +12,11 @@ python3 skill/scripts/check_layering.py <工程根目录> [选项]
 | 选项 | 默认 | 说明 |
 |---|---|---|
 | `--roles PATH` | 自动找 `.arch-roles` / `arch-roles.txt` | 角色清单路径 |
-| `--glue-max-lines N` | 200 | 入口胶水文件代码行上限 |
+| `--glue-max-lines N` | 200 | 入口胶水文件代码行上限；**仅作体积兜底，超限报 WARN**，不承担质量判定 |
 | `--glue-wait LEVEL` | `warn` | 胶水层忙等/阻塞延时：`off` / `warn` / `error` |
-| `--glue-pin LEVEL` | `warn` | 胶水层硬编码引脚/端口：`off` / `warn` / `error` |
+| `--glue-pin LEVEL` | `warn` | 胶水层硬编码引脚/端口（含 `->IDR`、宏别名）：`off` / `warn` / `error` |
+| `--glue-duty LEVEL` | `warn` | 胶水层职责规则（驱动/协议/状态机/ISR 体量/长 `if` 链/板级资源表）：`off` / `warn` / `error` |
+| `--glue-if-chain N` | 8 | 触发长 `if/else-if` 链提示的最少分支数 |
 | `--glue-max-func-lines N` | 80 | 胶水层单个函数代码行上限；`0` 关闭 |
 | `--glue-dispatch LEVEL` | `warn` | 胶水层字符串 `else if` 命令链：`off` / `warn` / `error` |
 | `--glue-dispatch-chain N` | 4 | 触发命令链提示的最少字符串 `else if` 分支数 |
@@ -72,6 +74,29 @@ ignore = third_party/, build-*/   # 不参与扫描的路径，可多行，支�
 - `ignore` 相对工程根，`third_party/` 这类目录名可匹配任意深度的同名目录。
 - 报错信息里始终使用内建层名（`alias hal = bsp` 之后显示 `bsp/`），便于上游统一收集误报。
 
+### `common` 层怎么判定
+
+- 角色名就是内建角色 **`common`**，不要另造名字。工程已用 `core` 表示“与硬件无关的核心逻辑”时，
+  写 `alias core = common`，检查器按 `common` 判定；`core` 若碰寄存器或厂商头，应映射到 `bsp`。
+- 路径约定：目录模式认 `common/`；清单模式写 `src/common_*.c = common`（`.h` 也建议显式列出）。
+- 可依赖方向：任何层可以 include `common`；`common` 只能 include C 标准库与同层头。
+- 判定（第 26 项）：`common` 出现厂商头 include、厂商/内核符号
+  （`HAL_` / `LL_` / `__HAL_` / `NVIC_` / `SysTick` / `SCB`）、寄存器访问（含裸地址 MMIO），
+  或包含 `bsp` / `components` / `app` / `osal` / `glue` 的头 → **ERROR**；
+  `大写标识符->成员` 的解引用 → **WARN**（纯数据聚合也会长这样，按 ERROR 会误伤；
+  不按文件白名单整层豁免——白名单是把规则关掉）。
+- 共享契约符号（第 27 项，ERROR）：`common` 层 `.h` 里声明、**且 `common` 里确有实现**的函数，
+  全仓**带函数体的定义**只允许 1 处。`;` 结尾的声明、函数指针赋值、宏包装不计；
+  契约头必须归到 `common`（否则规则看不到）。不做前缀硬编码，符号集来自契约头。
+  实现只落在 `bsp` / `osal` / `components` 的公共 API 头不判——工程常把 `include/pm/*.h`
+  全映射成 `common`，否则会把正常公共 API 误判成重复实现（板级工程实测 71 条）。
+- `common` 的 `.c` 同样受“文件作用域可写变量”限制（第 5 项）：纯逻辑层不持有跨模块状态，
+  仲裁所需状态由调用方传入或放到端口层。
+- 夹具：`tests/probe-common-bad`（6 ERROR / 1 WARN）、`tests/probe-common-contract`（1 ERROR）、
+  `tests/probe-common-clean`（0 发现）。
+- **不做**：ISR 与主循环共享的计数字段是否 32 位 `volatile`——字段名猜不出来，
+  只能靠 `ISR_SHARED` 之类显式标注，没有标注判不出（见盲区表第 9 条）。
+
 两者的完整写法与判定口径见 [integration.md](integration.md) 第 3 节。
 
 **优先级顺序**：角色清单 → 目录判定 → 胶水文件名自动识别（`main.c`、`startup_*`、`system_*`、`*_it.c`、`*_irq.c`）。
@@ -82,36 +107,44 @@ ignore = third_party/, build-*/   # 不参与扫描的路径，可多行，支�
 
 ## 检查项
 
-| # | 检查 | 级别 | 作用范围 |
-|---|---|---|---|
-| 1 | 越层调用 HAL / LL / SPL / RTOS，越层访问寄存器（含 `RCC->APBxENR`、`SysTick->VAL`、`SCB->*`、裸地址 MMIO） | ERROR | `app/`、`components/` |
-| 2 | 平台头泄漏 | ERROR | 非 bsp 层；`osal/*.c` 作为移植实现豁免 |
-| 3 | 厂商类型泄漏（头文件签名与 `.c` 代码） | ERROR | 非 bsp 层 |
-| 4 | 反向依赖：include 上层头、本地 `extern` 声明上层函数、直接调用上层函数（函数原型不计为调用）。例外：`bsp` 包含 `components` 的**仅类型/钩子头**（无平台头、无寄存器/厂商类型、无函数定义）→ WARN；`bsp` 调用 `components` 的 `*_hw_*` 钩子 → WARN；`bsp` 包含 `osal` 头放行，符号级限制见第 17 项 | ERROR / WARN | 全部已分层文件 |
-| 5 | 跨模块全局变量（文件作用域可写变量） | ERROR | 非 bsp 层 `.c` |
-| 6 | `extern` 跨模块变量 | ERROR | 非 bsp 层 `.c` 与 `.h` |
-| 7 | 决策型 `if` 嵌套超过 3 层（带 `else` 的决策金字塔；单分支守卫不计） | ERROR | 非 bsp 层 |
-| 8 | 未分层文件的平台调用 | WARN | 未分层文件 |
-| 9 | APP 直调 BSP、APP 越权调用 OSAL（只允许 `osal_sleep_ms` / `osal_tick_ms` / `osal_now_ms`） | ERROR | `app/` |
-| 10 | 入口胶水层超过行数上限 | ERROR | `glue` |
-| 11 | ISR 内调用阻塞 / 格式化 / 动态内存函数 | ERROR | 所有 `.c` |
-| 12 | app/组件层出现 `HAL_Delay` / 裸 `delay_ms` 等阻塞延时 | ERROR / WARN | `app/`、`components/` |
-| 13 | 固定地址段：同址、未对齐、通配段、C 段未显式定义、声明长度后区间重叠 | ERROR / WARN | 工程级 |
-| 14 | 宏间接越层：上层使用下层定义的硬件宏，或上层本地宏展开到下层调用/寄存器 | ERROR | `app/`、`components/` |
-| 15 | 唯一入口：第二个 `main.c` | ERROR | 工程级 |
-| 16 | 全工程没有分层目录或角色清单 | ERROR | 工程级 |
-| 17 | BSP 越权调用 OSAL：只允许 `*_critical_enter` / `*_critical_exit` / `*_tick_inc`，其余 `*osal_*` 调用（如 `osal_delay_ms`） | ERROR | `bsp/` |
-| 18 | 胶水层忙等/阻塞延时：空转等待硬件/标志的 `while`/`for`，`HAL_Delay`、`*delay_ms`、`*delay_us` 等调用 | WARN（可调级） | `glue` 的 `.c` |
-| 19 | 胶水层硬编码引脚/端口：`GPIO_PIN_x`、作为实参的 `GPIOx`、裸 `0x400xxxxx` 基址 | WARN（可调级） | `glue` 的 `.c` |
-| 20 | 胶水层单个函数代码行超过 `--glue-max-func-lines` | WARN | `glue` 的 `.c` |
-| 21 | 胶水层单函数内字符串 `else if` 分支达到 `--glue-dispatch-chain`，提示改注册表 | WARN（可调级） | `glue` 的 `.c` |
+| # | 规则名（内部名） | 检查 | 级别 | 实现状态 | 作用范围 |
+|---|---|---|---|---|---|
+| 1 | `platform_call` | 越层调用 HAL / LL / SPL / RTOS，越层访问寄存器（含 `RCC->APBxENR`、`SysTick->VAL`、`SCB->*`、裸地址 MMIO） | ERROR | 已实现 | `app/`、`components/` |
+| 2 | `platform_header` | 平台头泄漏 | ERROR | 已实现 | 非 bsp 层；`osal/*.c` 作为移植实现豁免 |
+| 3 | `vendor_type` | 厂商类型泄漏（头文件签名与 `.c` 代码） | ERROR | 已实现 | 非 bsp 层 |
+| 4 | `reverse_dep` | 反向依赖：include 上层头、本地 `extern` 声明上层函数、直接调用上层函数（函数原型不计为调用）。例外：`bsp` 包含 `components` 的**仅类型/钩子头**（无平台头、无寄存器/厂商类型、无函数定义）→ WARN；`bsp` 调用 `components` 的 `*_hw_*` 钩子 → WARN；`bsp` 包含 `osal` 头放行，符号级限制见第 17 项 | ERROR / WARN | 已实现 | 全部已分层文件 |
+| 5 | `global_var` | 跨模块全局变量（文件作用域可写变量） | ERROR | 已实现 | 非 bsp 层 `.c` |
+| 6 | `extern_var` | `extern` 跨模块变量 | ERROR | 已实现 | 非 bsp 层 `.c` 与 `.h` |
+| 7 | `nesting` | 决策型 `if` 嵌套超过 3 层（带 `else` 的决策金字塔；单分支守卫不计） | ERROR | 已实现（3.3.1 扩展到 glue） | 非 bsp 层 |
+| 8 | `unlayered` | 未分层文件的平台调用 | WARN | 已实现 | 未分层文件 |
+| 9 | `app_cross_layer` | APP 直调 BSP、APP 越权调用 OSAL（只允许 `osal_sleep_ms` / `osal_tick_ms` / `osal_now_ms`） | ERROR | 已实现（3.3.1 改按定义层） | `app/` |
+| 10 | `glue_max_lines` | 入口胶水层超过 `--glue-max-lines` | WARN（体积兜底，不承担质量判定） | 已实现（3.3.1 降为 WARN） | `glue` |
+| 11 | `isr_blocking` | ISR 内调用阻塞 / 格式化 / 动态内存函数 | ERROR | 已实现 | 所有 `.c` |
+| 12 | `blocking_delay` | app/组件层出现 `HAL_Delay` / 裸 `delay_ms` 等阻塞延时 | ERROR / WARN | 已实现 | `app/`、`components/` |
+| 13 | `fixed_section` | 固定地址段：同址、未对齐、通配段、C 段未显式定义、声明长度后区间重叠 | ERROR / WARN | 已实现 | 工程级 |
+| 14 | `macro_leak` | 宏间接越层：上层使用下层定义的硬件宏，或上层本地宏展开到下层调用/寄存器 | ERROR | 已实现 | `app/`、`components/` |
+| 15 | `unique_main` | 唯一入口：第二个 `main.c` | ERROR | 已实现 | 工程级 |
+| 16 | `no_roles` | 全工程没有分层目录或角色清单 | ERROR | 已实现 | 工程级 |
+| 17 | `bsp_osal` | BSP 越权调用 OSAL：只允许 `*_critical_enter` / `*_critical_exit` / `*_tick_inc`，其余 `*osal_*` 调用（如 `osal_delay_ms`） | ERROR | 已实现 | `bsp/` |
+| 18 | `glue_wait` | 胶水层忙等/阻塞延时：空转等待硬件/标志的 `while`/`for`，`HAL_Delay`、`*delay_ms`、`*delay_us` 等调用 | WARN（可调级） | 已实现 | `glue` 的 `.c` |
+| 19 | `glue_pin` | 胶水层硬编码引脚/端口：`GPIO_PIN_x`、作为实参的 `GPIOx`、裸 `0x400xxxxx` 基址、`->IDR`、宏别名引脚 | WARN（可调级） | 已实现（3.3.1 补 IDR/别名） | `glue` 的 `.c` |
+| 20 | `glue_max_func_lines` | 胶水层单个函数代码行超过 `--glue-max-func-lines` | WARN | 已实现 | `glue` 的 `.c` |
+| 21 | `glue_dispatch` | 胶水层单函数内**含字符串字面量的 `else if` 分支数**达到 `--glue-dispatch-chain`，提示改注册表 | WARN（可调级） | 已实现（语义已写死） | `glue` 的 `.c` |
+| 22 | `glue_duty` | 胶水层职责：实现外设驱动（G1）、常驻协议分帧（G2）、常驻状态机（G3）、ISR 体量超限（G5）、长 `if/else-if` 链（G10）、定义板级资源表（G11） | WARN（`--glue-duty` 可调级） | 已实现（3.3.1） | `glue` 的 `.c` |
+| 23 | `glue_isr_business` | ISR 里做业务：ISR 调用 components / app 的非 `*_hw_*` 函数（G4） | ERROR（不可关） | 已实现（3.3.1） | `glue` 的 `.c` |
+| 24 | `glue_include` | 其它层 include 入口胶水层的文件/头（G6） | ERROR（不可关） | 已实现（3.3.1） | 全部已分层文件 |
+| 25 | `glue_nesting` | 胶水层 `if` 嵌套：与其他层同口径，带 `else` 的决策型 `if` 嵌套 > 3 层（G9） | ERROR | 已实现（3.3.1） | `glue` |
+| 26 | `common_purity` | `common` 层：厂商头 / 厂商与内核符号（`HAL_`/`LL_`/`__HAL_`/`NVIC_`/`SysTick`/`SCB`）/ 寄存器 / 包含任何其它层的头 → ERROR；`大写标识符->成员` → WARN | ERROR / WARN | 已实现（3.3.1） | `common` |
+| 27 | `common_contract` | 共享契约符号：`common` 头声明且 `common` 确有实现的函数，全仓带函数体的定义只允许 1 处 | ERROR | 已实现（3.3.1） | 全仓 |
+| — | `glue_state_use`（G8，未实现） | glue 文件作用域变量的用途 | 盲区 | **不实现** | 人工评审 |
+| — | `glue_pin_alias_other`（G12 残余） | 带括号/拼接/`enum`/`const` 形式的引脚别名 | 盲区 | **不实现** | 人工评审 |
 
 第 11 项的阻塞函数名单：`HAL_Delay`、`osDelay`、`vTaskDelay`、`xQueueReceive`、`xSemaphoreTake`、`delay_ms`、`delay_us`、`printf`、`fprintf`、`sprintf`、`snprintf`、`malloc`、`calloc`、`realloc`、`free`。
 ISR 函数名匹配 `*_IRQHandler`、`*_isr`、`*_ISR`、`isr_*`，以及 CMSIS 内核中断
 `SysTick_Handler`、`NMI_Handler`、`HardFault_Handler`、`MemManage_Handler`、`BusFault_Handler`、
 `UsageFault_Handler`、`SVC_Handler`、`DebugMon_Handler`、`PendSV_Handler`。
 
-第 18–21 项只作用于 `glue` 层的 `.c` 文件，默认 WARN：
+第 18–26 项只作用于 `glue` 层（第 24 项作用于 include 方，第 26 项作用于 `common`），除明确标 ERROR 的项外默认 WARN：
 
 - **18 忙等/阻塞延时**：阻塞延时按调用名识别，允许工程前缀（`pm_osal_delay_ms`、`bsp_delay_us` 都算），
   名单为 `HAL_Delay`、`osDelay`、`osDelayUntil`、`vTaskDelay`、`vTaskDelayUntil`、`delay_ms`、`delay_us`、`mdelay`、`udelay`；
@@ -123,8 +156,25 @@ ISR 函数名匹配 `*_IRQHandler`、`*_isr`、`*_ISR`、`isr_*`，以及 CMSIS 
   `GPIOx->REG` 的寄存器读写不在此列。
 - **20 单函数过长**：函数体内非空、非纯 `{` / `}`、非预处理行的行数，超过阈值即报。判的是“代码行”，
   空行与整行注释不计。
-- **21 字符串 `else if` 命令链**：同一函数内条件含双引号字面量的 `else if` 分支数达到阈值即报一条，
-  位置在函数签名行。`if … return;` 早退守卫链、`switch`、函数指针表不判。
+- **21 字符串 `else if` 命令链**：**计数单位是含字符串字面量的 `else if` 分支个数**（不是字符串比较函数的调用次数，也不含首个 `if`）。
+  同一函数内达到阈值即报一条，位置在函数签名行。`if … return;` 早退守卫链、`switch`、函数指针表不判。
+- **22 胶水层职责（G1–G3/G5/G10）**：
+  - G1 驱动实现：**命中单位是函数个数**。非 init / 非 ISR / 非故障出口函数体内外设寄存器访问
+    （`->REG` 或裸地址 MMIO 强转）≥ 3 次，该函数计 1 条；消息里给出访问次数。
+  - G2 协议分帧：单函数 `strcmp` / `strncmp` / `ci_equal` ≥ 3 次。
+  - G3 状态机：单函数 `switch` 的 `case` ≥ 4 个（`default` 不计）。
+  - G5 ISR 体量：ISR 函数体代码行 > 40。
+  - G10 长 `if` 链：同一 `if/else-if` 链分支数 ≥ `--glue-if-chain`（默认 8），任意条件，`switch` 不计。
+- **23 ISR 做业务**：`glue` 的 ISR 调用定义在 `components` / `app` 的函数即 ERROR；
+  `*_hw_*` 钩子、`*FromISR`、`bsp` 函数、`osal` 临界区放行。经宏或函数指针的间接调用判不出（见盲区）。
+- **24 胶水层不得被 include**：任何非 glue 层 include 了 glue 的文件/头 → ERROR。
+- **25 胶水层 if 嵌套**：与第 7 项同口径，带 `else` 的决策型 `if` 嵌套 > 3 层 → ERROR。
+- **26 common 层**：见上文“`common` 层怎么判定”。
+- **27 共享契约符号**：`common` 头声明、且 `common` 确有实现 → 全仓只允许一处带体定义；
+  声明（`;`）、函数指针赋值、宏包装不计。数量不符报在契约头声明行。
+  实现只落在 bsp/osal/components 的公共 API 头不判（避免把所有公共契约头映射成 common 的工程满屏误报）。
+
+G8（胶水层文件作用域变量的用途）**不实现**，理由见 `rules.md` §1.4 与本文末尾盲区表。
 
 `arch-allow` 对逐行规则（18/19）看该行行尾；对函数级规则（20/21）看函数签名行行尾。
 
@@ -193,6 +243,24 @@ uint32_t g_dbg_counter;     // arch-allow:snapshot
 第 1、2、6 条合起来就是一句话：**“忙等”在静态文本里没有可靠签名**。检查器能稳定抓到的是
 “已知延时函数的调用”和“空转等寄存器/标志”两类，其余靠人工评审；这条限制不会因为版本升级消失。
 
+### 盲区清单（无法静态判定的形态）
+
+使用方只需读这一节。下列形态检查器**不判**，不代表代码没问题：
+
+| # | 盲区 | 为什么不判 | 替代手段 |
+|---|---|---|---|
+| 1 | **G8：glue 文件作用域变量的用途** | 同一形态既可能是合法句柄/初始化标志/ISR 交棒标志，也可能是跨命令业务缓存；纯文本判不出用途。按形态报 WARN 在板级工程一次命中 43 条，规则不可用 | 人工评审；G8 不实现、不设豁免语法 |
+| 2 | **函数定义提取的残余边界** | 3.3.1 已按顶层花括号配对提取，支持前导/后置 `__attribute__`、跨行签名、`static inline`；但 K&R 旧式参数、宏生成的函数、`#if` 分支里的定义仍可能漏检，漏检函数会绕过第 20/21 项与 G1/G2/G3/G5/G10 | 用夹具回灌；命中异常稀疏时先怀疑提取，再怀疑规则 |
+| 3 | **宏别名的其它形态** | G12 只认同文件单行 `#define NAME GPIOx` / `GPIO_PIN_n`；`#define LED_PORT (GPIOA)`（带括号）、多层宏拼接、`enum` / `const` 别名判不出 | 人工评审；统一改用端口层句柄 |
+| 4 | **G4 的间接调用** | ISR 经宏、函数指针或注册表调用 components/app 函数时，文本里没有“ISR → 业务函数”的直接调用边 | 人工评审；注册表声明处加注释说明调用上下文 |
+| 5 | **`main.cpp` 不在胶水判定范围** | 胶水文件名只认 `main.c`、`startup_*`、`system_*`、`*_it.c`、`*_irq.c`；`main.cpp` 不会被判成 glue，也就不会触发第 18–25 项 | C++ 工程在 `.arch-roles` 显式写 `src/main.cpp = glue` |
+| 6 | **初始化名豁免漏运行期函数** | G1 按名字排除 `*_init*` / `*_config*` / `*_setup*` / `*_clock*`；运行期函数若叫 `relay_setup_cycle` 会被当作初始化放过 | 人工评审；避免用初始化词根命名运行期函数 |
+| 7 | **ISR 里写文件作用域状态、宏内联业务** | 与 G8 同源：变量用途与宏展开后的调用链都判不出 | 人工评审 |
+| 8 | **资源仲裁函数全仓唯一（语义层）** | 第 27 项只能抓“契约头声明 + 同名带体定义”这一种；换名字的语义重复、跨模块的功能复制判不出 | 人工评审；契约统一收敛到 `common` 头 |
+| 9 | **ISR 共享计数字段的位宽与 `volatile`** | 应由 ISR 写、主循环读的字段必须 32 位且 `volatile`，但字段名猜不出来，只能靠显式标注（如 `ISR_SHARED`）；没有标注判不出 | 人工评审；可选规则包（需工程统一标注） |
+
+> 另见 `rules.md` 第 13 节：初始化顺序、ISR 与主循环契约、回调穿层、函数定义提取残余边界等。
+
 
 ## 接进 CI
 
@@ -200,10 +268,12 @@ uint32_t g_dbg_counter;     // arch-allow:snapshot
 
 ```yaml
 - name: layering
-  run: |
-    python3 skill/scripts/check_layering.py .
-    python3 tests/run_tests.py
+  run: python3 tests/run_tests.py
 ```
+
+**只跑 `tests/run_tests.py`，不要对仓库根跑 `check_layering.py .`。**
+本仓库的 `examples/` 下每个示例各自带一个 `main.c`，全仓扫描会命中第 15 项（唯一入口）
+6 条 ERROR——那是示例隔离的预期结果，不是缺陷；`run_tests.py` 会分别扫描每个夹具并核对条数。
 
 其它工程引用本检查器（单文件拷进 `tools/`）时，CI 跑两条命令：
 
@@ -221,5 +291,6 @@ uint32_t g_dbg_counter;     // arch-allow:snapshot
 - `ERROR` 一律阻断合并；
 - `WARN` 首次接入时允许存在，但要在 `TECH_DEBT.md` 登记存量；
 - 回归夹具（`tests/`）的期望条数变化必须与检查器改动同一个提交；
-- 检查器通过只代表“它覆盖的 21 项”没有问题，不代表规范全部满足。
+  版本号与该版本的 `CHANGELOG.md` 记录也必须在同一个提交里，不允许先改版本后补记录；
+- 检查器通过只代表“它覆盖的 27 项”没有问题，不代表规范全部满足。
   初始化顺序、ISR 与主循环契约、回调穿层没有静态检查（见 `rules.md` 第 13 节）。

@@ -41,7 +41,7 @@
 
 ```python
 # source-repo: https://github.com/BiscuiTs2026/firmware-four-layer-architecture
-# checker-version: 3.3.0
+# checker-version: 3.3.1
 # source-commit: self    ← 上游仓库内为 self；拷到使用方仓库后改成上游提交哈希，并在 tools/CHECKER.lock 里登记
 ```
 
@@ -65,7 +65,7 @@ python3 tools/check_layering.py --version | grep source-commit   # 必须是上�
 
 ```
 # 上游检查器锁文件：改这里等于声明"我升到了某个版本"
-checker-version = 3.3.0
+checker-version = 3.3.1
 source-repo     = https://github.com/BiscuiTs2026/firmware-four-layer-architecture
 source-commit   = 3f1c9a2b7d8e4c5f0a1b2c3d4e5f60718293a4b5
 synced-at       = 2026-11-18
@@ -104,7 +104,7 @@ jobs:
 `--version` 单独使用时只打印：
 
 ```
-checker-version: 3.3.0
+checker-version: 3.3.1
 source-repo: https://github.com/BiscuiTs2026/firmware-four-layer-architecture
 source-commit: self
 ```
@@ -117,17 +117,26 @@ v3.2 及以前，胶水层只有行数闸门。真实工程会把上限一路抬
 | 规则 | 选项 | 默认 | 判据摘要 |
 |---|---|---|---|
 | 忙等/阻塞延时 | `--glue-wait` | `warn` | 空体循环等待寄存器/标志；`HAL_Delay`、`*delay_ms` 等调用 |
-| 硬编码引脚/端口 | `--glue-pin` | `warn` | `GPIO_PIN_x`、作为实参的 `GPIOx`、裸 `0x400xxxxx` |
+| 硬编码引脚/端口 | `--glue-pin` | `warn` | `GPIO_PIN_x`、作为实参的 `GPIOx`、裸 `0x400xxxxx`、`->IDR`、宏别名引脚 |
 | 单函数过长 | `--glue-max-func-lines` | 80 | 函数体内代码行数；`0` 关闭 |
-| 字符串 `else if` 命令链 | `--glue-dispatch` / `--glue-dispatch-chain` | `warn` / 4 | 同一函数内比较字符串字面量的 `else if` 分支数 |
+| 字符串 `else if` 命令链 | `--glue-dispatch` / `--glue-dispatch-chain` | `warn` / 4 | 同一函数内含字符串字面量的 `else if` 分支数 |
+| 胶水层职责（v3.3.1） | `--glue-duty` / `--glue-if-chain` | `warn` / 8 | 驱动实现、协议分帧、状态机、ISR 体量、长 `if` 链、板级资源表 |
+| 文件行数 | `--glue-max-lines` | 200 | **体积兜底，WARN**；不再承担质量判定 |
 
-升级到 3.3.0 时按下面顺序处理：
+升级到 3.3.x 时按下面顺序处理：
 
 1. 先用默认 WARN 跑一遍，逐条判定真问题与误报；误报按第 4 节回灌，不要本地改规则。
 2. CubeMX / CubeIDE 生成的文件（`main.c`、`*_it.c`）先用 `ignore` 挡掉。
    第 19 项分不清生成行与手写行，生成工程里的 `GPIO_PIN_x` 会命中。
 3. 存量清零后，再按 4.1 的三条门槛决定是否在 CI 里写成 `--glue-wait error` 之类。
-   第 18–21 项默认 WARN，属于“未达 gate 门槛”的建议级规则。
+   第 18–25 项默认 WARN，属于“未达 gate 门槛”的建议级规则；行数（第 10 项）只作体积兜底，
+   板端唯一的 ERROR 不应长期是行数——语义规则才是质量判定。
+
+**分类放错的表现**：`.arch-roles` 里把文件归错层，最典型的症状是“某个文件规则命中异常密集”
+（例如一个文件独吞十几条引脚命中）。这时**先怀疑分类，再怀疑规则**：
+确认该文件的真实职责，是端口层数据就归 `bsp`，是纯逻辑就归 `common`，不应塞进 `glue`。
+本次实测中 `platform/stm32f103/board_f103c8.c` 被映射成 glue，导致 17 条引脚命中全落在它身上；
+改为端口层后，命中归零，规则本身没有问题。
 
 ---
 
@@ -178,12 +187,13 @@ third_party/      厂商包，ignore 掉
 | `hal` 调 `app`（调用 / 本地 `extern` / include） | ERROR | 反向依赖，与四层同一口径 |
 | `app` 里出现寄存器、`HAL_`、LL、厂商类型 | ERROR | 分层的最小含义，与层数无关 |
 | `hal` 头文件把 `GPIO_TypeDef` 暴露给上层 | ERROR | 厂商类型不得出 BSP |
-| `main.c` | 仍按 `glue`：可碰寄存器与 HAL，≤ 200 行，不承载业务；并受第 18–21 项语义约束（忙等/延时、硬编码引脚、单函数 ≤ 80 行、长字符串 `else if` 链） | 入口胶水层与层数无关 |
+| `main.c` | 仍按 `glue`：可碰寄存器与 HAL，≤ 200 行（超限 WARN，体积兜底），不承载业务；并受第 18–25 项语义约束（忙等/延时、硬编码引脚、单函数 ≤ 80 行、长字符串 `else if` 链、职责规则、ISR 做业务） | 入口胶水层与层数无关 |
 | 某个文件解析出的层不在 `layers` 里 | ERROR | 清单与代码脱节，不能靠声明把第三层藏起来 |
 | 只有 `app/` 一个目录、代码直接写寄存器 | 不是两层，是没分层：这些文件按 `app` 判定，会报越层 | 层数少不等于可以不分层 |
 | 厂商目录没有 `ignore`，直接映射成 `bsp` | 能跑，但每次都要解析整套厂商包（实测慢约 100 倍） | 见第 5 节实测 |
 
-`glue` 与 `common` 始终可用，不必写进 `layers`。
+`glue` 与 `common` 始终可用，不必写进 `layers`。工程若已用 `core` 表示“与硬件无关的核心逻辑”，
+写 `alias core = common`，不要新造第二个语义名；`core` 若碰寄存器或厂商头，应映射到 `bsp`。
 
 **消息里的层名是内建名**：`alias hal = bsp` 之后，反向依赖报的是 `bsp/`，不是 `hal/`。
 这是有意的——同一条规则在所有工程里输出同一套词，便于上游收集误报。
@@ -210,8 +220,8 @@ third_party/      厂商包，ignore 掉
 3. **改规则**（上游）：只改检查器与夹具，不顺带重构、不扩大范围；允许把规则放宽成 WARN，
    但要在 `docs/checker.md` 写清放宽理由。
 4. **回归全绿**（上游）：`python3 tests/run_tests.py` 全部 PASS，包括示例工程的零发现项与“单文件拷出运行”项。
-5. **发版并通知**（上游）：`CHECKER_VERSION` 递增，提交信息写清哪条规则变了、影响哪些工程；
-   使用方按 4.3 升级。
+5. **发版并通知**（上游）：`CHECKER_VERSION` 递增，**版本号与该版本的 `CHANGELOG.md` 记录必须在同一个提交里**，
+   提交信息写清哪条规则变了、影响哪些工程；使用方按 4.3 升级。
 
 ### 4.1 新规则进 CI gate 的三条门槛
 
@@ -252,6 +262,27 @@ WARN 转 ERROR 是“这个仓从现在起不接受这类写法”，不是“�
 4. 本地跑一遍 `python3 tools/check_layering.py .`，对新增发现逐条判定：真问题进 backlog，
    误报按第 4 节回灌，不要把新版本直接塞进 CI 让流水线红着；
 5. 提交，交由 CI 用 `--version --lock` 复核。
+   使用方自己的版本升级记录也应与 `CHECKER.lock` 改动同提交，避免“锁文件说 3.3.1、历史里找不到升级说明”。
+
+### 4.4 锁升级流程（升级不等于开始管事）
+
+**未升级锁的工程，新条文等于零。** 这不是免责声明，是使用顺序：检查器是按 commit 锁定的，
+工程里跑的是 `CHECKER.lock` 指向的那一版；上游发了 3.3.1，而工程还锁在 3.2.0，
+第 18–26 项一条都不会执行。板端工程就出现过这种情况：CI 一直绿，不是因为代码合规，
+而是因为拦它的规则从未进入锁定版本。
+
+锁升级按顺序走，缺一步都会让“升级”变成假动作：
+
+1. **新版本发布**：上游 `CHECKER_VERSION` 递增，`CHANGELOG.md` 与版本号同提交；
+2. **工程内替换**：覆盖 `tools/check_layering.py`，改 `SOURCE_COMMIT` 常量与文件头注释，
+   同步更新 `tools/CHECKER.lock`（版本、来源提交、`synced-at`）；
+3. **自检**：`python3 tools/check_layering.py --version --lock tools/CHECKER.lock` 必须退出 0；
+4. **重跑基线**：用新版本按工程现有 `ignore` 配置完整扫一遍，保存完整输出；
+5. **对比**：与旧版结果逐条对比，新增项分三类——真问题、分类问题、规则误报；
+6. **建存量清单**：真问题进 `TECH_DEBT.md`（文件、行号、规则名、归属），分类问题先改 `.arch-roles`；
+7. **才谈升 ERROR**：按 4.2 的五条前置条件执行，一条不满足就保持 WARN。
+
+第 4–6 步不能省：没有基线对比，升级后第一次 CI 变红会分不清是新规则、旧存量还是分类放错。
 
 ---
 
