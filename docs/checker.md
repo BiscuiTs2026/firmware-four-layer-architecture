@@ -290,6 +290,16 @@ uint32_t g_dbg_counter;     // arch-allow:snapshot
 
 接入方式、锁文件格式、升级与回灌流程见 [integration.md](integration.md)。
 
+**推送前自查（本仓约定）**：改完检查器或夹具，先本地照抄 CI 的两条命令各跑一遍，再推送：
+
+```bash
+python tests/run_tests.py
+cmake -S . -B build-host -DFOUR_LAYER_HOST_CHECK=ON && cmake --build build-host --parallel
+```
+
+只跑 `tests/run_tests.py` 的默认路径不够：CI 是 Linux + LF 换行，本地是 Windows + CRLF，
+目录遍历顺序、换行符、路径大小写都可能只在 CI 上暴露。跨平台输出必须排序后再拼接。
+
 建议分层：
 
 - `ERROR` 一律阻断合并；

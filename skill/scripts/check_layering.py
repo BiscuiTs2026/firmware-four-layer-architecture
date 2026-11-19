@@ -1238,6 +1238,8 @@ def check_common_contracts(root: str, cfg):
         if not any(s[0] == "common" for s in sites):
             continue  # 公共 API 头：实现落在具体层，不属于仲裁唯一性
         if len(sites) != 1:
+            # os.walk 的目录遍历顺序随平台变化；排序后再拼消息，保证跨平台输出一致
+            sites = sorted(sites, key=lambda s: (s[1], s[2]))
             where = "；".join(f"{s[1]}:{s[2]}" for s in sites)
             findings.append((hrel, hline,
                              f"共享契约符号 {name} 应有且仅有一处带函数体的定义，实际 {len(sites)} 处（{where}）"))
