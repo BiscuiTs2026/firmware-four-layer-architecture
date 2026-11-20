@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # source-repo: https://github.com/BiscuiTs2026/firmware-four-layer-architecture
-# checker-version: 3.3.1
+# checker-version: 3.4.0
 # source-commit: self    ← 上游仓库内为 self；拷到使用方仓库后改成上游提交哈希，并在 tools/CHECKER.lock 里登记
-"""check_layering.py — 四层架构启发式静态检查（v3.3.1）。
+"""check_layering.py — 四层架构启发式静态检查（v3.4.0）。
 
 用法：
     python3 check_layering.py <工程根目录> [选项]
@@ -109,7 +109,7 @@ import os
 import re
 import sys
 
-CHECKER_VERSION = "3.3.1"
+CHECKER_VERSION = "3.4.0"
 SOURCE_REPO = "https://github.com/BiscuiTs2026/firmware-four-layer-architecture"
 SOURCE_COMMIT = "self"  # 上游仓库内保持 self；使用方拷贝后改为上游提交哈希
 

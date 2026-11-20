@@ -136,6 +136,7 @@ ignore = third_party/, build-*/   # 不参与扫描的路径，可多行，支�
 | 25 | `glue_nesting` | 胶水层 `if` 嵌套：与其他层同口径，带 `else` 的决策型 `if` 嵌套 > 3 层（G9） | ERROR | 已实现（3.3.1） | `glue` |
 | 26 | `common_purity` | `common` 层：厂商头 / 厂商与内核符号（`HAL_`/`LL_`/`__HAL_`/`NVIC_`/`SysTick`/`SCB`）/ 寄存器 / 包含任何其它层的头 → ERROR；`大写标识符->成员` → WARN | ERROR / WARN | 已实现（3.3.1） | `common` |
 | 27 | `common_contract` | 共享契约符号：`common` 头声明且 `common` 确有实现的函数，全仓带函数体的定义只允许 1 处 | ERROR | 已实现（3.3.1） | 全仓 |
+| 28 | `feature_gate` | 停用功能一致性：`off` 特性的 `feature-symbol` 仍在无条件编译路径被调用；`feature-irq` 仍被使能且该特性有活跃调用点 | ERROR | 已实现（3.4.0） | 全仓 `.c` |
 | — | `glue_state_use`（G8，未实现） | glue 文件作用域变量的用途 | 盲区 | **不实现** | 人工评审 |
 | — | `glue_pin_alias_other`（G12 残余） | 带括号/拼接/`enum`/`const` 形式的引脚别名 | 盲区 | **不实现** | 人工评审 |
 
@@ -266,9 +267,9 @@ uint32_t g_dbg_counter;     // arch-allow:snapshot
 | 8 | **资源仲裁函数全仓唯一（语义层）** | 第 27 项只能抓“契约头声明 + 同名带体定义”这一种；换名字的语义重复、跨模块的功能复制判不出 | 人工评审；契约统一收敛到 `common` 头 |
 | 9 | **ISR 共享计数字段的位宽与 `volatile`** | 应由 ISR 写、主循环读的字段必须 32 位且 `volatile`，但字段名猜不出来，只能靠显式标注（如 `ISR_SHARED`）；没有标注判不出 | 人工评审；可选规则包（需工程统一标注） |
 | 10 | **ISR 内读 `->IDR` 不判** | 判上下沿是标准中断分发（A1 允许），与 G1 的 ISR 豁免同口径；G7 只报 ISR 之外的业务性读 | 人工评审：确认该 ISR 只做分发，不夹带业务 |
-| 11 | **停用功能仍在初始化 / 使能中断 / 被 ISR 使用** | “功能是否停用”是组件 `.c` 里的本地宏；“初始化调用”“`NVIC_EnableIRQ`”“ISR 体”分散在 glue 与 bsp 的不同文件。纯文本拿不到跨文件宏值，也不建模 `#if` 区域，按 `*_init` / `EXTI*_IRQHandler` 之类前缀推断必然误伤 | 已按显式锚落地为第 28 项（分支待合并）；未声明 `feature` 时不判，**不按名字猜** |
+| 11 | **停用功能仍在初始化 / 使能中断 / 被 ISR 使用** | “功能是否停用”是组件 `.c` 里的本地宏；“初始化调用”“`NVIC_EnableIRQ`”“ISR 体”分散在 glue 与 bsp 的不同文件。纯文本拿不到跨文件宏值，也不建模 `#if` 区域，按 `*_init` / `EXTI*_IRQHandler` 之类前缀推断必然误伤 | 已按显式锚落地为第 28 项（3.4.0）；未声明 `feature` 时不判，**不按名字猜** |
 
-### 停用功能一致性（第 28 项，分支待合并）
+### 停用功能一致性（第 28 项，3.4.0）
 
 **背景**：板端已删掉 `main.c` 里对 `pm_sonar_init()` 的调用，端口层函数保留待将来换时间源；EXTI 掩码与 `NVIC_EnableIRQ` 不再执行。规则因此按“可证明的活跃性”判断，而不是看到文本就报。
 
@@ -289,7 +290,7 @@ feature-irq DIST = EXTI15_10_IRQn
 
 **夹具**：`probe-feature-gate-bad`（off + 活跃调用 + EnableIRQ，2 ERROR）、`probe-feature-gate-clean`（on 不报 + off 但初始化无人调用，0 发现）、`probe-feature-gate-guarded`（调用与使能在 `#if` 内，0 发现）。
 
-**待办（合并轮）**：版本号与 CHANGELOG 在合并时一起做，本分支不改 `CHECKER_VERSION`。合并说明要把本规则与板端“已删除 `pm_sonar_init()` 调用”对应上：板端不声明 `feature` 也能过，声明后仍是 0 ERROR；`#if` 只是 `guarded` 夹具覆盖的一种合规写法，不是合规前提。
+**3.4.0 发布说明**：本版把规则与板端“已删除 `pm_sonar_init()` 调用”对应上：板端不声明 `feature` 也能过，声明后仍是 0 ERROR；`#if` 只是 `guarded` 夹具覆盖的一种合规写法，不是合规前提。
 
 > 另见 `rules.md` 第 13 节：初始化顺序、ISR 与主循环契约、回调穿层、函数定义提取残余边界等。
 
@@ -334,5 +335,5 @@ cmake -S . -B build-host -DFOUR_LAYER_HOST_CHECK=ON && cmake --build build-host 
 - `WARN` 首次接入时允许存在，但要在 `TECH_DEBT.md` 登记存量；
 - 回归夹具（`tests/`）的期望条数变化必须与检查器改动同一个提交；
   版本号与该版本的 `CHANGELOG.md` 记录也必须在同一个提交里，不允许先改版本后补记录；
-- 检查器通过只代表“它覆盖的 27 项”没有问题，不代表规范全部满足。
+- 检查器通过只代表“它覆盖的 28 项”没有问题，不代表规范全部满足。
   初始化顺序、ISR 与主循环契约、回调穿层没有静态检查（见 `rules.md` 第 13 节）。
