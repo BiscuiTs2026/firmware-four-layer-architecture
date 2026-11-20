@@ -4,9 +4,43 @@
 
 三句话概括：
 
-1. 使用方把 `check_layering.py` **单文件**拷进自己的 `tools/`，配一份 `.arch-roles` 与一份 `tools/CHECKER.lock`；
+1. 使用方把 `check_layering.py` **单文件**拷进自己的 `tools/`，配一份 `tools/CHECKER.lock`；
+   扁平 `src/` 工程再加一份 `.arch-roles`（目录模式不需要，见第 0 节）；
 2. 检查器只依赖 Python 标准库，不读本仓库任何其它文件，拷出去就能跑；
 3. 规则演进由上游改，使用方按锁文件升版本；误报与漏报走第 4 节的回灌流程。
+
+---
+
+## 0. 快速接入（照抄版）
+
+**目录模式**（工程路径里已有 `bsp/`、`components/`、`app/`、`common/` 这类目录）不需要写 `.arch-roles`，四步就能拿到结果：
+
+1. 取文件，并记下取的是哪个提交：
+
+```bash
+git clone --depth 1 https://github.com/BiscuiTs2026/firmware-four-layer-architecture.git /tmp/fla
+cp /tmp/fla/skill/scripts/check_layering.py tools/
+git -C /tmp/fla rev-parse HEAD        # 这个哈希填到下一步的两处
+```
+
+只想拿单文件时也可以直接下载
+`https://raw.githubusercontent.com/BiscuiTs2026/firmware-four-layer-architecture/<提交哈希>/skill/scripts/check_layering.py`，
+哈希同样取仓库当前 `HEAD`。
+
+2. 改两处：`SOURCE_COMMIT` 常量与文件头 `source-commit` 注释（细节见 2.1）。
+3. 写 `tools/CHECKER.lock`：字段照抄 2.1 的示例，只替换 `source-commit` 与 `synced-at`。
+4. 跑两条命令，退出码就是门槛：
+
+```bash
+python tools/check_layering.py --version --lock tools/CHECKER.lock
+python tools/check_layering.py .
+```
+
+Windows 下用 `python`（文档里的 `python3` 是 Linux / CI 写法，Windows 上通常没有这个命令名）。
+`--version` 输出里的 `source-commit` 必须是上游提交哈希，出现 `self` 就是第 2 步没改常量。
+
+**扁平 `src/` 工程**才需要 `.arch-roles`：从 [`arch-roles.example`](arch-roles.example) 复制成工程根的
+`.arch-roles`，按注释取消对应写法并改成自己的路径。目录模式的工程不写这个文件。
 
 ---
 
@@ -28,7 +62,7 @@
 
 ```
 <工程根>/
-├── .arch-roles               文件 → 层映射，以及 alias / layers / ignore 指令
+├── .arch-roles               仅扁平 src/ 需要：文件 → 层映射，以及 alias / layers / ignore 指令
 ├── tools/
 │   ├── check_layering.py     从上游某个 commit 原样拷入，改文件头注释与 SOURCE_COMMIT 常量两处
 │   └── CHECKER.lock          同步点：版本、来源仓、来源提交、本地补丁说明
