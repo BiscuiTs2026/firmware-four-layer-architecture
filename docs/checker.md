@@ -117,8 +117,8 @@ ignore = third_party/, build-*/   # 不参与扫描的路径，可多行，支�
 | 6 | `extern_var` | `extern` 跨模块变量 | ERROR | 已实现 | `app/`、`components/`、`osal/`、`common/` 的 `.c` 与 `.h` |
 | 7 | `nesting` | 决策型 `if` 嵌套超过 3 层（带 `else` 的决策金字塔；单分支守卫不计；`if` 与 `else` 体都带花括号才计） | ERROR | 已实现（3.3.1 扩展到 glue） | 非 bsp 层 |
 | 8 | `unlayered` | 未分层文件的平台调用 | WARN | 已实现 | 未分层文件 |
-| 9 | `app_cross_layer` | APP 直调 BSP、APP 越权调用 OSAL（只允许 `osal_sleep_ms` / `osal_tick_ms` / `osal_now_ms`） | ERROR | 已实现（3.3.1 改按定义层） | `app/` |
-| 10 | `glue_max_lines` | 入口胶水层超过 `--glue-max-lines` | WARN（体积兜底，不承担质量判定） | 已实现（3.3.1 降为 WARN） | `glue` |
+| 9 | `app_cross_layer` | APP 直调 BSP、APP 越权调用 OSAL（只允许 `osal_sleep_ms` / `osal_tick_ms` / `osal_now_ms`）；按函数定义所在层判定，不看 `bsp_` / `osal_` 前缀 | ERROR | 已实现（3.4.1 移除前缀兜底） | `app/` |
+| 10 | `glue_max_lines` | 入口胶水层超过 `--glue-max-lines`；代码行口径：不含空行 / 纯注释 / `#` 行，纯 `{}` 行计入；映射为 `glue` 的 `.h` 同样计数 | WARN（体积兜底，不承担质量判定） | 已实现（3.3.1 降为 WARN） | `glue` |
 | 11 | `isr_blocking` | ISR 内调用阻塞 / 格式化 / 动态内存函数 | ERROR | 已实现 | 已分层 `.c`（未分层文件只报第 8 项 WARN） |
 | 12 | `blocking_delay` | app/组件层出现 `HAL_Delay` / 裸 `delay_ms` 等阻塞延时 | ERROR / WARN | 已实现 | `app/`、`components/` |
 | 13 | `fixed_section` | 固定地址段：同址、未对齐、通配段、C 段未显式定义、声明长度后区间重叠 | ERROR / WARN | 已实现 | 工程级 |
@@ -132,7 +132,7 @@ ignore = third_party/, build-*/   # 不参与扫描的路径，可多行，支�
 | 21 | `glue_dispatch` | 胶水层单函数内**含字符串字面量的 `else if` 分支数**达到 `--glue-dispatch-chain`，提示改注册表 | WARN（可调级） | 已实现（语义已写死） | `glue` 的 `.c` |
 | 22 | `glue_duty` | 胶水层职责：实现外设驱动（G1）、常驻协议分帧（G2）、多分支 `switch`（G3）、ISR 体量超限（G5）、长 `if/else-if` 链（G10，与第 21 项去重）、定义板级资源表（G11） | WARN（`--glue-duty` 可调级） | 已实现（3.3.1） | `glue` 的 `.c` |
 | 23 | `glue_isr_business` | ISR 里做业务：ISR 调用 components / app 的非 `*_hw_*` 函数（G4） | ERROR（不可关） | 已实现（3.3.1） | `glue` 的 `.c` |
-| 24 | `glue_include` | 其它层 include 入口胶水层的文件/头（G6） | ERROR（不可关） | 已实现（3.3.1） | 除 `glue` 外的已分层文件 |
+| 24 | `glue_include` | 其它层 include 入口胶水层的头文件（G6）；只按 `.h` 文件名索引，`#include "xxx.c"` 不在检查范围 | ERROR（不可关） | 已实现（3.3.1） | 除 `glue` 外的已分层文件 |
 | 25 | `glue_nesting` | 胶水层 `if` 嵌套：与其他层同口径，带 `else` 的决策型 `if` 嵌套 > 3 层（G9） | ERROR | 已实现（3.3.1） | `glue` |
 | 26 | `common_purity` | `common` 层：厂商头 / 厂商与内核符号（`HAL_`/`LL_`/`__HAL_`/`NVIC_`/`SysTick`/`SCB`）/ 寄存器 / 包含任何其它层的头 → ERROR；`大写标识符->成员` → WARN | ERROR / WARN | 已实现（3.3.1） | `common` |
 | 27 | `common_contract` | 共享契约符号：`common` 头声明且 `common` 确有实现的函数，全仓带函数体的定义只允许 1 处 | ERROR | 已实现（3.3.1） | 全仓 |
@@ -175,7 +175,8 @@ ISR 函数名匹配 `*_IRQHandler`、`*_isr`、`*_ISR`、`isr_*`、`*_isr_*`（�
     `BOARD_*` / `GPIO_PIN_n` / `GPIOx` ≥ 2 处，该表计 1 条。
 - **23 ISR 做业务**：`glue` 的 ISR 调用定义在 `components` / `app` 的函数即 ERROR；
   `*_hw_*` 钩子、`*FromISR`、`bsp` 函数、`osal` 临界区放行。经宏或函数指针的间接调用判不出（见盲区）。
-- **24 胶水层不得被 include**：任何非 glue 层 include 了 glue 的文件/头 → ERROR。
+- **24 胶水层不得被 include**：任何非 glue 层 include 了 glue 的头文件 → ERROR。
+  检查器只按 `.h` basename 查头文件角色索引，`#include "xxx.c"`、源文件本身不参与判定。
 - **25 胶水层 if 嵌套**：与第 7 项同口径，带 `else` 的决策型 `if` 嵌套 > 3 层 → ERROR。
 - **26 common 层**：见上文“`common` 层怎么判定”。
 - **27 共享契约符号**：`common` 头声明、且 `common` 确有实现 → 全仓只允许一处带体定义；
@@ -189,7 +190,7 @@ ISR 函数名匹配 `*_IRQHandler`、`*_isr`、`*_ISR`、`isr_*`、`*_isr_*`（�
 
 G8（胶水层文件作用域变量的用途）**不实现**，理由见 `rules.md` §1.4 与本文末尾盲区表。
 
-`arch-allow` 对逐行规则（18/19）看该行行尾；对函数级规则（20/21）看函数签名行行尾。
+`arch-allow` 的生效范围见下文“豁免”一节；它不是“跳过全部检查”，对第 5 / 6 / 7 / 25 项等无效。
 
 第 13 项解析 `*.ld` 中形如 `.name 0x20003000 (NOLOAD) :` 的显式地址段（地址须为 `0x` + 至少 6 位十六进制，更短的写法不会被识别）：
 
@@ -210,15 +211,20 @@ SystemCoreClock = 8000000U;                      /* CMSIS 必需符号，默认�
 
 volatile snap_t g_telemetry __attribute__((section(".telem_ram"), used));  /* 带段属性，默认不报全局变量 */
 
-GPIOA->ODR = 1U;            // arch-allow   （本行全部检查跳过）
-
-uint32_t g_dbg_counter;     // arch-allow:snapshot
+GPIOA->ODR = 1U;            // arch-allow   （第 1 / 19 项对该行不判）
 ```
 
 规则：
 
-- `// arch-allow` 跳过该行的**所有**检查；
-- `// arch-allow:snapshot` 额外放行该行的全局变量判定；
+- `// arch-allow` **不是“跳过该行全部检查”**，只对下列规则生效：
+  第 1、2、3、8、9、11、12、14、17、18、19、20、21、22、24、26、27、28 项；
+  第 4 项只有 include 与直接调用子判据生效，本地 `extern` 声明上层函数子判据不生效。
+  其中逐行规则看该行行尾；第 20 / 21 / 22 项看函数签名行行尾；第 27 项看契约声明行行尾。
+- **对下列规则无效**：第 5（跨模块全局变量）、6（`extern` 变量）、7 与 25（`if` 嵌套）、
+  10（胶水行数）、13（固定地址段）、15（唯一 `main.c`）、16（无分层信息）、23（ISR 做业务）。
+  加 `arch-allow` 仍会报，只能改结构，或按上文“已知误报”处理。
+- `// arch-allow:snapshot` **未实现额外语义**，按普通 `// arch-allow` 处理；
+  又因第 5 项不认该标记，快照全局变量仍然会报。固定地址快照请用段属性写法（上例，已默认豁免）。
 - 豁免必须写理由，例如 `// arch-allow: 字模查表循环，非业务嵌套`；
 - 一个文件里出现三处以上 `arch-allow`，说明规则或代码结构有问题，应改结构而不是继续加豁免。
 
@@ -226,7 +232,7 @@ uint32_t g_dbg_counter;     // arch-allow:snapshot
 
 | 场景 | 现象 | 处理 |
 |---|---|---|
-| `switch` + `if` 状态机 | 少数分支仍可能被判成决策嵌套 | 确认后该行加 `arch-allow`，或改用表驱动 |
+| `switch` + `if` 状态机 | 少数分支仍可能被判成决策嵌套 | 第 7 / 25 项不认 `arch-allow`；确认误报后提夹具回灌，或改用表驱动 |
 | CMSIS 必需符号 | `SystemCoreClock`、`uwTick`、`uwTickPrio`、`uwTickFreq` | 已默认豁免 |
 | 固定地址快照 | 全局变量告警 | 已按段属性豁免 |
 | 函数名与变量同名 | 反向依赖可能误判调用目标 | 用 `// arch-allow` 标注，或改名 |

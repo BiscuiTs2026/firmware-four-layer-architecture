@@ -36,7 +36,7 @@ description: 按 BSP / OSAL / 组件 / APP 四层生成或审查 MCU 固件，�
 ## 常见误判
 
 - 嵌套只统计带 `else` 的决策分支，`for → for → if (mask)` 这类守卫不会误报；
-  若确有表驱动 `switch` 内嵌需要放行，用 `// arch-allow` 标注原因。
+  第 7 / 25 项**不认** `// arch-allow`，确属误报请提夹具回灌上游，不要靠标注放行。
 - `SystemCoreClock` 等 CMSIS 必需符号已默认豁免。
 - 带 `__attribute__((section(...)))` 的快照变量不按跨模块全局变量处理；
   但该段必须在 `.ld` 里有同名显式定义（通配覆盖不算），否则判为未定义段。

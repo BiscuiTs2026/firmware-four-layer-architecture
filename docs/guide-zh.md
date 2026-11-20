@@ -80,4 +80,4 @@ python3 tests/run_tests.py
 | 固定地址段 | 未涉及 | 显式约定 + 同址/重叠/通配检查 |
 | 时序 | 未涉及 | 采样节拍、循环耗时上限、分块非阻塞 |
 | 上板流程 | 未涉及 | 分批汇报、串口独占、烧录前说明 |
-| 检查器误报 | `SystemCoreClock` 等 | 默认豁免 + `arch-allow:snapshot` |
+| 检查器误报 | `SystemCoreClock` 等 | 默认豁免；其余按 `docs/checker.md` “豁免”的生效范围处理 |

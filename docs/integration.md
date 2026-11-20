@@ -75,7 +75,7 @@ Windows 下用 `python`（文档里的 `python3` 是 Linux / CI 写法，Windows
 
 ```python
 # source-repo: https://github.com/BiscuiTs2026/firmware-four-layer-architecture
-# checker-version: 3.4.0
+# checker-version: 3.4.1
 # source-commit: self    ← 上游仓库内为 self；拷到使用方仓库后改成上游提交哈希，并在 tools/CHECKER.lock 里登记
 ```
 
@@ -99,7 +99,7 @@ python3 tools/check_layering.py --version | grep source-commit   # 必须是上�
 
 ```
 # 上游检查器锁文件：改这里等于声明"我升到了某个版本"
-checker-version = 3.4.0
+checker-version = 3.4.1
 source-repo     = https://github.com/BiscuiTs2026/firmware-four-layer-architecture
 source-commit   = 3f1c9a2b7d8e4c5f0a1b2c3d4e5f60718293a4b5
 synced-at       = 2026-11-18
@@ -138,7 +138,7 @@ jobs:
 `--version` 单独使用时只打印：
 
 ```
-checker-version: 3.4.0
+checker-version: 3.4.1
 source-repo: https://github.com/BiscuiTs2026/firmware-four-layer-architecture
 source-commit: self
 ```
