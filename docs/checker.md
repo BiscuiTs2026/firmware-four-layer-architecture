@@ -262,6 +262,24 @@ uint32_t g_dbg_counter;     // arch-allow:snapshot
 | 8 | **资源仲裁函数全仓唯一（语义层）** | 第 27 项只能抓“契约头声明 + 同名带体定义”这一种；换名字的语义重复、跨模块的功能复制判不出 | 人工评审；契约统一收敛到 `common` 头 |
 | 9 | **ISR 共享计数字段的位宽与 `volatile`** | 应由 ISR 写、主循环读的字段必须 32 位且 `volatile`，但字段名猜不出来，只能靠显式标注（如 `ISR_SHARED`）；没有标注判不出 | 人工评审；可选规则包（需工程统一标注） |
 | 10 | **ISR 内读 `->IDR` 不判** | 判上下沿是标准中断分发（A1 允许），与 G1 的 ISR 豁免同口径；G7 只报 ISR 之外的业务性读 | 人工评审：确认该 ISR 只做分发，不夹带业务 |
+| 11 | **停用功能仍在初始化 / 使能中断 / 被 ISR 使用** | “功能是否停用”是组件 `.c` 里的本地宏；“初始化调用”“`NVIC_EnableIRQ`”“ISR 体”分散在 glue 与 bsp 的不同文件。纯文本拿不到跨文件宏值，也不建模 `#if` 区域，按 `*_init` / `EXTI*_IRQHandler` 之类前缀推断必然误伤 | 人工评审；将来以显式锚落地（见下节“待立项”），**不按名字猜** |
+
+### 待立项：停用功能一致性（拟第 28 项，暂不实现）
+
+**立项前提**：板端先把“停用功能的初始化与中断”修干净——`pm_sonar_init()`、EXTI 使能、`EXTI15_10_IRQHandler` 一并放进 `#if DIST_TIME_BASE_READY`，重新启用时补 `NVIC_SetPriority`——再立项。否则规则一上线就会把板端 CI 打红。
+
+**最小切片（显式锚、零猜测）**：
+
+- `.arch-roles` 增三条可选声明，未声明就不判：
+  ```
+  feature DIST = off
+  feature-symbol DIST = pm_sonar_init
+  feature-irq DIST = EXTI15_10_IRQn
+  ```
+- 第 28 项 `feature_gate`：仅对 `off` 特性，检查 `feature-symbol` 是否仍有调用点（复用 `func_index` + `CALL_NAME`，排除定义行与原型），以及 `feature-irq` 是否仍有 `NVIC_EnableIRQ` / `HAL_NVIC_EnableIRQ`；命中为 ERROR。
+- **前置依赖**：检查器需先具备 `#if` 区域跳过语义。否则合法修复（`#if` 包住调用）仍会被文本扫到，规则会把修好的代码继续报错。
+- 夹具三个：`bad`（off + 调用 + EnableIRQ，期望 2 ERROR）、`clean`（on，0 发现）、`guarded`（调用在 `#if` 里，0 发现）。第三个过不了，就不能算“能自证”。
+- 级别与开关（默认 WARN/ERROR、是否并入 `--glue-duty`）立项时再定；本节只留档，不改现有判据。
 
 > 另见 `rules.md` 第 13 节：初始化顺序、ISR 与主循环契约、回调穿层、函数定义提取残余边界等。
 
