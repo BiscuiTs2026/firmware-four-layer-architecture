@@ -47,12 +47,15 @@ CASES = [
     # v3.3.1 common 层：厂商头/HAL/寄存器/反向依赖
     ("tests/probe-common-bad", os.path.join(ROOT, "tests", "probe-common-bad", "expected.txt")),
     ("tests/probe-common-contract", os.path.join(ROOT, "tests", "probe-common-contract", "expected.txt")),
+    # 第 28 项 feature_gate：显式声明的 off 特性仍在初始化/使能中断
+    ("tests/probe-feature-gate-bad", os.path.join(ROOT, "tests", "probe-feature-gate-bad", "expected.txt")),
 ]
 
 # 示例工程必须零 ERROR、零 WARN
 CLEAN = ["examples/good-hal", "examples/good-baremetal", "examples/flat", "examples/two-layer",
          "tests/probe-glue-clean", "tests/probe-glue-func", "tests/probe-bsp-boardtable",
-         "tests/probe-common-clean"]
+         "tests/probe-common-clean", "tests/probe-feature-gate-clean",
+         "tests/probe-feature-gate-guarded"]
 
 
 def load_expected(path):

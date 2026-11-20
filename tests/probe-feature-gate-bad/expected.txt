@@ -1,0 +1,2 @@
+[ERROR] src/app_main.c:5 功能 DIST 已声明停用，但仍调用 pm_sonar_init（feature-symbol）
+[ERROR] src/port_sonar.c:8 功能 DIST 已声明停用，但仍使能中断 EXTI15_10_IRQn（feature-irq）

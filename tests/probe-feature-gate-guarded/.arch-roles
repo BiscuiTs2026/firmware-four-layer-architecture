@@ -1,0 +1,6 @@
+src/app_main.c = glue
+src/port_sonar.c = bsp
+
+feature DIST = off
+feature-symbol DIST = pm_sonar_init
+feature-irq DIST = EXTI15_10_IRQn

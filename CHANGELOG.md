@@ -3,6 +3,46 @@
 只记录会影响使用方扫描结果的规则变化（判据、严重级、默认开关）。纯文档修订不列；
 更早版本见 `git log -- rules.md skill/scripts/check_layering.py`。
 
+## 3.4.0（2026-11-20）
+
+**新增第 28 项 `feature_gate`（停用功能一致性）**，默认启用，不新增命令行开关；未声明 `feature` 的工程行为不变。
+
+### 声明（`.arch-roles`，未声明就不判）
+
+```
+feature <名> = on|off
+feature-symbol <名> = <函数>, ...
+feature-irq <名> = <IRQn>, ...
+```
+
+### 判据
+
+- `off` 特性的 `feature-symbol`（初始化/入口函数）仍在**无条件编译路径**被调用 → **ERROR**；
+  定义行、原型、函数指针赋值不计。
+- `feature-irq`：仅当**同一特性至少有一个活跃 `feature-symbol` 调用点**时，才把
+  `NVIC_EnableIRQ` / `HAL_NVIC_EnableIRQ` 判 **ERROR**。初始化函数无人调用说明功能已停用，
+  函数体里的使能文本不会执行。
+- `#if/#ifdef/#ifndef ... #endif`（含 `#else/#elif` 分支）内的调用与使能一律不判。
+- 只声明 `feature-irq`、没有 `feature-symbol` 的特性无法证明停用，保守按活跃处理。
+- 未声明 `feature` 的工程跳过本项，输出与 3.3.1 完全一致。
+
+### 合规姿势（板端实测，不要误读成“必须 `#if`”）
+
+板级工程的做法是**删掉 `main.c` 里对 `pm_sonar_init()` 的调用**，端口层函数与
+`NVIC_EnableIRQ(EXTI15_10_IRQn)` 文本仍保留。因此：
+
+- **不声明 `feature` 也合规**（本项不判）；
+- 追加 `feature DIST = off` 三条声明后**仍是 0 ERROR**（0 ERROR / 3 WARN，3 条为既有 UART ISR 钩子）；
+- `#if` 包裹只是 `guarded` 夹具覆盖的另一种合规写法，**不是合规前提**。
+
+### 夹具
+
+| 夹具 | 构造 | 期望 |
+|---|---|---|
+| `tests/probe-feature-gate-bad` | off + 无条件调用 + 函数体内 `NVIC_EnableIRQ` | 2 ERROR |
+| `tests/probe-feature-gate-clean` | on 正常调用；off 的初始化函数无人调用 | 0 发现 |
+| `tests/probe-feature-gate-guarded` | 调用与使能都在 `#if` 内 | 0 发现 |
+
 ## 3.3.1（2026-11-19）
 
 **发布确认**：3.3.1 经独立复核通过（跨行契约声明、ISR 内 IDR 豁免、G3 措辞、G10 与第 21 项去重四项），

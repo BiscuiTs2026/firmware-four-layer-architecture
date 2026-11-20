@@ -1,0 +1,10 @@
+src/app_main.c = glue
+src/port_sonar.c = bsp
+
+feature FEAT_ON = on
+feature-symbol FEAT_ON = pm_on_init
+feature-irq FEAT_ON = TIM6_IRQn
+
+feature FEAT_OFF = off
+feature-symbol FEAT_OFF = pm_off_init
+feature-irq FEAT_OFF = EXTI15_10_IRQn
