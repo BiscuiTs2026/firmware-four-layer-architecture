@@ -99,10 +99,10 @@ ignore = third_party/, build-*/   # 不参与扫描的路径，可多行，支�
 
 两者的完整写法与判定口径见 [integration.md](integration.md) 第 3 节。
 
-**优先级顺序**：角色清单 → 目录判定 → 胶水文件名自动识别（`main.c`、`startup_*`、`system_*`、`*_it.c`、`*_irq.c`）。
+**优先级顺序**：角色清单 → 目录判定 → 胶水文件名自动识别（`main.c`、`startup_*`、`system_*`、`*_it.c`、`*_irq.c`、`*_irq_handler.c`）。
 
 - 全工程都不命中 → ERROR，提示检查未生效；
-- 角色清单存在但一条都没匹配上 → ERROR；
+- 角色清单存在但一条都没匹配上 → ERROR（已有文件按目录/胶水命中时才报这条；若连分层文件都没有，报的是上一条文案）；
 - 部分文件不命中 → 这些文件只报 WARN，不参与分层约束。
 
 ## 检查项
@@ -110,16 +110,16 @@ ignore = third_party/, build-*/   # 不参与扫描的路径，可多行，支�
 | # | 规则名（内部名） | 检查 | 级别 | 实现状态 | 作用范围 |
 |---|---|---|---|---|---|
 | 1 | `platform_call` | 越层调用 HAL / LL / SPL / RTOS，越层访问寄存器（含 `RCC->APBxENR`、`SysTick->VAL`、`SCB->*`、裸地址 MMIO） | ERROR | 已实现 | `app/`、`components/` |
-| 2 | `platform_header` | 平台头泄漏 | ERROR | 已实现 | 非 bsp 层；`osal/*.c` 作为移植实现豁免 |
-| 3 | `vendor_type` | 厂商类型泄漏（头文件签名与 `.c` 代码） | ERROR | 已实现 | 非 bsp 层 |
-| 4 | `reverse_dep` | 反向依赖：include 上层头、本地 `extern` 声明上层函数、直接调用上层函数（函数原型不计为调用）。例外：`bsp` 包含 `components` 的**仅类型/钩子头**（无平台头、无寄存器/厂商类型、无函数定义）→ WARN；`bsp` 调用 `components` 的 `*_hw_*` 钩子 → WARN；`bsp` 包含 `osal` 头放行，符号级限制见第 17 项 | ERROR / WARN | 已实现 | 全部已分层文件 |
-| 5 | `global_var` | 跨模块全局变量（文件作用域可写变量） | ERROR | 已实现 | 非 bsp 层 `.c` |
-| 6 | `extern_var` | `extern` 跨模块变量 | ERROR | 已实现 | 非 bsp 层 `.c` 与 `.h` |
-| 7 | `nesting` | 决策型 `if` 嵌套超过 3 层（带 `else` 的决策金字塔；单分支守卫不计） | ERROR | 已实现（3.3.1 扩展到 glue） | 非 bsp 层 |
+| 2 | `platform_header` | 平台头泄漏 | ERROR | 已实现 | `app/`、`components/`、`osal/`、`common/`；`osal/*.c` 作为移植实现豁免，`glue` 不查 |
+| 3 | `vendor_type` | 厂商类型泄漏（头文件签名与 `.c` 代码） | ERROR | 已实现 | `app/`、`components/`、`osal/`、`common/`（`glue` 允许厂商类型） |
+| 4 | `reverse_dep` | 反向依赖：include 上层头、本地 `extern` 声明上层函数、直接调用上层函数（函数原型不计为调用）。例外：`bsp` 包含 `components` 的**仅类型/钩子头**（无平台头、无寄存器/厂商类型、无函数定义）→ WARN；`bsp` 调用 `components` 的 `*_hw_*` 钩子 → WARN；`bsp` 包含 `osal` 头放行，符号级限制见第 17 项 | ERROR / WARN | 已实现 | 除 `glue` 外的已分层文件（`glue` 不参与 include / `extern` / 调用检查） |
+| 5 | `global_var` | 跨模块全局变量（文件作用域可写变量；`static` / `const` / `extern` / 带 `__attribute__` 的行不计） | ERROR | 已实现 | `app/`、`components/`、`osal/`、`common/` 的 `.c` |
+| 6 | `extern_var` | `extern` 跨模块变量 | ERROR | 已实现 | `app/`、`components/`、`osal/`、`common/` 的 `.c` 与 `.h` |
+| 7 | `nesting` | 决策型 `if` 嵌套超过 3 层（带 `else` 的决策金字塔；单分支守卫不计；`if` 与 `else` 体都带花括号才计） | ERROR | 已实现（3.3.1 扩展到 glue） | 非 bsp 层 |
 | 8 | `unlayered` | 未分层文件的平台调用 | WARN | 已实现 | 未分层文件 |
 | 9 | `app_cross_layer` | APP 直调 BSP、APP 越权调用 OSAL（只允许 `osal_sleep_ms` / `osal_tick_ms` / `osal_now_ms`） | ERROR | 已实现（3.3.1 改按定义层） | `app/` |
 | 10 | `glue_max_lines` | 入口胶水层超过 `--glue-max-lines` | WARN（体积兜底，不承担质量判定） | 已实现（3.3.1 降为 WARN） | `glue` |
-| 11 | `isr_blocking` | ISR 内调用阻塞 / 格式化 / 动态内存函数 | ERROR | 已实现 | 所有 `.c` |
+| 11 | `isr_blocking` | ISR 内调用阻塞 / 格式化 / 动态内存函数 | ERROR | 已实现 | 已分层 `.c`（未分层文件只报第 8 项 WARN） |
 | 12 | `blocking_delay` | app/组件层出现 `HAL_Delay` / 裸 `delay_ms` 等阻塞延时 | ERROR / WARN | 已实现 | `app/`、`components/` |
 | 13 | `fixed_section` | 固定地址段：同址、未对齐、通配段、C 段未显式定义、声明长度后区间重叠 | ERROR / WARN | 已实现 | 工程级 |
 | 14 | `macro_leak` | 宏间接越层：上层使用下层定义的硬件宏，或上层本地宏展开到下层调用/寄存器 | ERROR | 已实现 | `app/`、`components/` |
@@ -132,7 +132,7 @@ ignore = third_party/, build-*/   # 不参与扫描的路径，可多行，支�
 | 21 | `glue_dispatch` | 胶水层单函数内**含字符串字面量的 `else if` 分支数**达到 `--glue-dispatch-chain`，提示改注册表 | WARN（可调级） | 已实现（语义已写死） | `glue` 的 `.c` |
 | 22 | `glue_duty` | 胶水层职责：实现外设驱动（G1）、常驻协议分帧（G2）、多分支 `switch`（G3）、ISR 体量超限（G5）、长 `if/else-if` 链（G10，与第 21 项去重）、定义板级资源表（G11） | WARN（`--glue-duty` 可调级） | 已实现（3.3.1） | `glue` 的 `.c` |
 | 23 | `glue_isr_business` | ISR 里做业务：ISR 调用 components / app 的非 `*_hw_*` 函数（G4） | ERROR（不可关） | 已实现（3.3.1） | `glue` 的 `.c` |
-| 24 | `glue_include` | 其它层 include 入口胶水层的文件/头（G6） | ERROR（不可关） | 已实现（3.3.1） | 全部已分层文件 |
+| 24 | `glue_include` | 其它层 include 入口胶水层的文件/头（G6） | ERROR（不可关） | 已实现（3.3.1） | 除 `glue` 外的已分层文件 |
 | 25 | `glue_nesting` | 胶水层 `if` 嵌套：与其他层同口径，带 `else` 的决策型 `if` 嵌套 > 3 层（G9） | ERROR | 已实现（3.3.1） | `glue` |
 | 26 | `common_purity` | `common` 层：厂商头 / 厂商与内核符号（`HAL_`/`LL_`/`__HAL_`/`NVIC_`/`SysTick`/`SCB`）/ 寄存器 / 包含任何其它层的头 → ERROR；`大写标识符->成员` → WARN | ERROR / WARN | 已实现（3.3.1） | `common` |
 | 27 | `common_contract` | 共享契约符号：`common` 头声明且 `common` 确有实现的函数，全仓带函数体的定义只允许 1 处 | ERROR | 已实现（3.3.1） | 全仓 |
@@ -140,10 +140,13 @@ ignore = third_party/, build-*/   # 不参与扫描的路径，可多行，支�
 | — | `glue_state_use`（G8，未实现） | glue 文件作用域变量的用途 | 盲区 | **不实现** | 人工评审 |
 | — | `glue_pin_alias_other`（G12 残余） | 带括号/拼接/`enum`/`const` 形式的引脚别名 | 盲区 | **不实现** | 人工评审 |
 
-第 11 项的阻塞函数名单：`HAL_Delay`、`osDelay`、`vTaskDelay`、`xQueueReceive`、`xSemaphoreTake`、`delay_ms`、`delay_us`、`printf`、`fprintf`、`sprintf`、`snprintf`、`malloc`、`calloc`、`realloc`、`free`。
-ISR 函数名匹配 `*_IRQHandler`、`*_isr`、`*_ISR`、`isr_*`，以及 CMSIS 内核中断
+第 11 项的阻塞函数名单：`HAL_Delay`、`osDelay`、`osDelayUntil`、`vTaskDelay`、`vTaskDelayUntil`、`xQueueReceive`、`xSemaphoreTake`、`osMutexWait`、`delay_ms`、`delay_us`、`mdelay`、`udelay`、`printf`、`fprintf`、`sprintf`、`snprintf`、`vsnprintf`、`malloc`、`calloc`、`realloc`、`free`。
+ISR 函数名匹配 `*_IRQHandler`、`*_isr`、`*_ISR`、`isr_*`、`*_isr_*`（名字中段也认），以及 CMSIS 内核中断
 `SysTick_Handler`、`NMI_Handler`、`HardFault_Handler`、`MemManage_Handler`、`BusFault_Handler`、
 `UsageFault_Handler`、`SVC_Handler`、`DebugMon_Handler`、`PendSV_Handler`。
+
+第 12 项的 `HAL_Delay` 单独判 ERROR；其余按 `SOFT_DELAY` 名单判 WARN：`delay_ms`、`delay_us`、`mdelay`、`udelay`、`osal_sleep_ms`。
+因此 APP 按第 9 项允许调用 `osal_sleep_ms`，仍会得到一条第 12 项 WARN。
 
 第 18–26 项只作用于 `glue` 层（第 24 项作用于 include 方，第 26 项作用于 `common`），除明确标 ERROR 的项外默认 WARN：
 
@@ -159,15 +162,17 @@ ISR 函数名匹配 `*_IRQHandler`、`*_isr`、`*_ISR`、`isr_*`，以及 CMSIS 
   空行与整行注释不计。
 - **21 字符串 `else if` 命令链**：**计数单位是含字符串字面量的 `else if` 分支个数**（不是字符串比较函数的调用次数，也不含首个 `if`）。
   同一函数内达到阈值即报一条，位置在函数签名行。`if … return;` 早退守卫链、`switch`、函数指针表不判。
-- **22 胶水层职责（G1–G3/G5/G10）**：
+- **22 胶水层职责（G1–G3/G5/G10/G11）**：
   - G1 驱动实现：**命中单位是函数个数**。非 init / 非 ISR / 非故障出口函数体内外设寄存器访问
     （`->REG` 或裸地址 MMIO 强转）≥ 3 次，该函数计 1 条；消息里给出访问次数。
   - G2 协议分帧：单函数 `strcmp` / `strncmp` / `ci_equal` ≥ 3 次。
   - G3 多分支 `switch`：单函数 `switch` 的 `case` ≥ 4 个（`default` 不计）。命中只说明判定留在入口，
     消息按“switch 分支”表述，不推断是不是状态机。
   - G5 ISR 体量：ISR 函数体代码行 > 40。
-  - G10 长 `if` 链：同一 `if/else-if` 链分支数 ≥ `--glue-if-chain`（默认 8），任意条件，`switch` 不计。
-    同一函数已由第 21 项报过的，G10 跳过，不重复报。
+  - G10 长 `if` 链：同一 `if/else-if` 链分支数 ≥ `--glue-if-chain`（默认 8），任意条件，`switch` 不计；
+    每个 `if` 体都要带花括号才参与计数。同一函数已由第 21 项报过的，G10 跳过，不重复报。
+  - G11 板级资源表：glue `.c` 中 `static const <type> name[] = { ... }` 的表体出现
+    `BOARD_*` / `GPIO_PIN_n` / `GPIOx` ≥ 2 处，该表计 1 条。
 - **23 ISR 做业务**：`glue` 的 ISR 调用定义在 `components` / `app` 的函数即 ERROR；
   `*_hw_*` 钩子、`*FromISR`、`bsp` 函数、`osal` 临界区放行。经宏或函数指针的间接调用判不出（见盲区）。
 - **24 胶水层不得被 include**：任何非 glue 层 include 了 glue 的文件/头 → ERROR。
@@ -186,13 +191,15 @@ G8（胶水层文件作用域变量的用途）**不实现**，理由见 `rules.
 
 `arch-allow` 对逐行规则（18/19）看该行行尾；对函数级规则（20/21）看函数签名行行尾。
 
-第 13 项解析 `*.ld` 中形如 `.name 0x20003000 (NOLOAD) :` 的显式地址段：
+第 13 项解析 `*.ld` 中形如 `.name 0x20003000 (NOLOAD) :` 的显式地址段（地址须为 `0x` + 至少 6 位十六进制，更短的写法不会被识别）：
 
 - 同地址两段、地址未 4 字节对齐 → ERROR；
 - 固定地址段体里出现 `*(.name*)` 这类通配 → ERROR（必须写成 `*(.name)`）；
 - C 里 `section("...")` 的段名必须在 `.ld` 里有**同名显式定义**，通配覆盖不算定义 → 否则 ERROR；
-- 段体标注了长度（`/* size: 0x40 */` 或 `. = . + 0x40;`）时，检查区间是否重叠 → ERROR；
-- 已定义但未标 `(NOLOAD)` → WARN。
+  以 `.data` / `.bss` / `.rodata` / `.text` 开头的标准段名不要求显式定义；
+- 段体标注了长度（`/* size: 0x40 */`、`. = . + 0x40;` 或 `/* 0x20003000..0x2000303F */` 区间注释）时，检查区间是否重叠 → ERROR；
+- 已定义但未标 `(NOLOAD)` → WARN；
+- 工程里一个带显式地址的 `.ld` 段都没有时，本项整体跳过（C 段定义检查也不执行）。
 
 > 区间重叠只有在声明长度时才可判定。没标长度的段只能查出“同址”，不同起始地址的重叠要人工核对。
 
@@ -220,11 +227,11 @@ uint32_t g_dbg_counter;     // arch-allow:snapshot
 | 场景 | 现象 | 处理 |
 |---|---|---|
 | `switch` + `if` 状态机 | 少数分支仍可能被判成决策嵌套 | 确认后该行加 `arch-allow`，或改用表驱动 |
-| CMSIS 必需符号 | `SystemCoreClock`、`uwTick` | 已默认豁免 |
+| CMSIS 必需符号 | `SystemCoreClock`、`uwTick`、`uwTickPrio`、`uwTickFreq` | 已默认豁免 |
 | 固定地址快照 | 全局变量告警 | 已按段属性豁免 |
 | 函数名与变量同名 | 反向依赖可能误判调用目标 | 用 `// arch-allow` 标注，或改名 |
 | 故障出口函数（`Error_Handler`、`error_loop`、`fault_*`、`panic*`）里的阻塞延时/忙等 | 第 18 项不判 | 这些函数不再返回调度，阻塞属于设计；第 19 项引脚规则仍生效 |
-| 不同地址但未标长度的段重叠 | 检查器查不出 | 补 `/* size: 0xNN */`，或人工核对 |
+| 不同地址但未标长度的段重叠 | 检查器查不出 | 补 `/* size: 0xNN */`、`. = . + 0xNN;` 或区间注释，或人工核对 |
 | 空主循环 `while (1) {}`、`for (;;) {}`、`for (volatile i…) {}` 软件延时 | 不判忙等 | 有意保守：只判“循环体为空且条件含寄存器或 ready/busy/flag 语义”的循环；主循环与故障出口不误伤 |
 | 胶水层 `GPIOA->ODR` 之类寄存器操作 | 不判硬编码引脚 | 胶水层本来就允许寄存器操作；第 19 项只抓引脚**映射**（`GPIO_PIN_x`、作为实参的 `GPIOx`、裸基址） |
 | CubeMX/HAL 生成工程里的 `GPIO_PIN_x`、`HAL_GPIO_Init(GPIOA,…)` | 第 19 项会命中生成代码 | 检查器不区分生成行与手写行；接入时把生成文件 `ignore` 掉，只扫自有胶水 |

@@ -15,8 +15,8 @@
 |---|---|---|
 | 业务逻辑全堆在 `main.c` | 入口胶水层 ≤ 200 行，只做初始化与中断分发；再查忙等/延时、硬编码引脚、单函数过长、长 `else if` 命令链 | 能 |
 | 组件层直接写 `GPIOA->ODR` | 寄存器 / HAL / LL / SPL 只允许在 BSP 与胶水层（含 `SysTick->VAL`、`SCB->*`、`RCC->APBxENR`、裸地址 MMIO） | 能 |
-| 公共头里出现 `UART_HandleTypeDef` | 厂商类型不得出 BSP（头文件与 `.c` 都查） | 能 |
-| 模块之间靠 `extern` 变量通信 | 禁 extern 传数据，只读快照除外（`.c` 与 `.h` 都查） | 能 |
+| 公共头里出现 `UART_HandleTypeDef` | 厂商类型不得进 `app` / `components` / `osal` / `common`（`.h` 与 `.c` 都查；BSP 与胶水层允许） | 能 |
+| 模块之间靠 `extern` 变量通信 | 禁 extern 传数据，只读快照除外（`app` / `components` / `osal` / `common` 的 `.c` 与 `.h` 都查） | 能 |
 | 用宏把下层调用藏起来 | 上层使用下层硬件宏、或上层宏展开到下层调用 | 能 |
 | BSP 在本地 `extern` 反调组件 | 反向依赖同时查 include、extern 声明与直接调用 | 能 |
 | ISR 里 `printf`、`delay_ms` | ISR 只允许置标志/发消息/清中断；含 `SysTick_Handler` 等内核中断 | 能 |
@@ -114,7 +114,7 @@ layers = app, hal
 |---|---|---|
 | 不写角色清单，直接扫 | 0 ERROR，31 条“未分层”WARN | 1 ERROR：检查未生效（除非加 `--allow-unlayered`） |
 | 写角色清单后扫 | 35 ERROR，按类别可定位 | 同样会扫出，另有新增的宏/头文件/反向调用检查 |
-| 327 行的 `main.c` 工程 | 1 ERROR：胶水层 268 行超限 | 相同 |
+| 327 行的 `main.c` 工程 | 1 ERROR：胶水层 268 行超限 | 1 WARN：第 10 项 3.3.1 起降为 WARN |
 
 35 条里包含 25 条越层寄存器、3 条 `extern` 时基、2 条平台头泄漏、4 条跨模块全局变量、1 条链接脚本段未定义。
 它们都是可定位的结构问题；**是否每一条都值得改、改动成本多大，仍需人工判断**。
