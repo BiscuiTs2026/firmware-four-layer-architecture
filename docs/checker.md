@@ -289,7 +289,7 @@ feature-irq DIST = EXTI15_10_IRQn
 
 **夹具**：`probe-feature-gate-bad`（off + 活跃调用 + EnableIRQ，2 ERROR）、`probe-feature-gate-clean`（on 不报 + off 但初始化无人调用，0 发现）、`probe-feature-gate-guarded`（调用与使能在 `#if` 内，0 发现）。
 
-**待办**：版本号与 CHANGELOG 在合并时定；本分支不改 `CHECKER_VERSION`。
+**待办（合并轮）**：版本号与 CHANGELOG 在合并时一起做，本分支不改 `CHECKER_VERSION`。合并说明要把本规则与板端“已删除 `pm_sonar_init()` 调用”对应上：板端不声明 `feature` 也能过，声明后仍是 0 ERROR；`#if` 只是 `guarded` 夹具覆盖的一种合规写法，不是合规前提。
 
 > 另见 `rules.md` 第 13 节：初始化顺序、ISR 与主循环契约、回调穿层、函数定义提取残余边界等。
 
